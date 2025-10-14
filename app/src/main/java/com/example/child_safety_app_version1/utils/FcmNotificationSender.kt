@@ -13,7 +13,7 @@ import java.net.URL
 
 object FcmNotificationSender {
     private const val TAG = "FcmNotificationSender"
-    private const val PROJECT_ID = "child-safety-mobile-app"
+    private const val PROJECT_ID = "child-safety-c7fea"
     private const val FCM_ENDPOINT = "https://fcm.googleapis.com/v1/projects/$PROJECT_ID/messages:send"
 
     /**
@@ -61,26 +61,26 @@ object FcmNotificationSender {
             Log.d(TAG, "   Token preview: ${accessToken.take(50)}...")
             Log.d(TAG, "   Token length: ${accessToken.length} characters")
 
-            // Step 2: Get parent FCM tokens
+            // Step 2: Get parent FCM tokens and child names from parents
             Log.d(TAG, "")
-            Log.d(TAG, "STEP 2: Fetching Parent FCM Tokens")
+            Log.d(TAG, "STEP 2: Fetching Parent FCM Tokens and Child Names")
             Log.d(TAG, "────────────────────────────────────────")
             Log.d(TAG, "   Querying: /users/$childUid/parents")
 
-            val parentTokens = try {
-                getParentFcmTokens(childUid)
+            val parentData = try {
+                getParentFcmTokensAndChildNames(childUid)
             } catch (e: Exception) {
-                Log.e(TAG, "❌ EXCEPTION fetching parent tokens", e)
+                Log.e(TAG, "❌ EXCEPTION fetching parent data", e)
                 e.printStackTrace()
                 emptyMap()
             }
 
             Log.d(TAG, "")
-            Log.d(TAG, "📊 Parent Tokens Result:")
-            Log.d(TAG, "   Total parents found: ${parentTokens.size}")
+            Log.d(TAG, "📊 Parent Data Result:")
+            Log.d(TAG, "   Total parents found: ${parentData.size}")
 
-            if (parentTokens.isEmpty()) {
-                Log.e(TAG, "❌ FAILED: No parent tokens found")
+            if (parentData.isEmpty()) {
+                Log.e(TAG, "❌ FAILED: No parent data found")
                 Log.e(TAG, "")
                 Log.e(TAG, "🔍 TROUBLESHOOTING STEPS:")
                 Log.e(TAG, "   1. Check if parents are linked to child:")
@@ -96,35 +96,31 @@ object FcmNotificationSender {
                 return@withContext false
             }
 
-            parentTokens.forEach { (parentUid, tokens) ->
-                Log.d(TAG, "   Parent: ${parentUid.take(10)}... → ${tokens.size} token(s)")
-                tokens.forEachIndexed { index, token ->
-                    Log.d(TAG, "      Token ${index + 1}: ${token.take(30)}...")
+            parentData.forEach { (parentUid, data) ->
+                Log.d(TAG, "   Parent: ${parentUid.take(10)}...")
+                Log.d(TAG, "      Child Name: ${data.childName}")
+                Log.d(TAG, "      Tokens: ${data.tokens.size}")
+                data.tokens.forEachIndexed { index, token ->
+                    Log.d(TAG, "         Token ${index + 1}: ${token.take(30)}...")
                 }
             }
 
-            // Step 3: Get child's name
+            // Step 3: Send notifications
             Log.d(TAG, "")
-            Log.d(TAG, "STEP 3: Getting Child Name")
-            Log.d(TAG, "────────────────────────────────────────")
-            val childName = getChildName(childUid) ?: "Your child"
-            Log.d(TAG, "   Child name: $childName")
-
-            // Step 4: Send notifications
-            Log.d(TAG, "")
-            Log.d(TAG, "STEP 4: Sending FCM Messages")
+            Log.d(TAG, "STEP 3: Sending FCM Messages")
             Log.d(TAG, "────────────────────────────────────────")
             var successCount = 0
             var failureCount = 0
-            val totalMessages = parentTokens.values.sumOf { it.size }
+            val totalMessages = parentData.values.sumOf { it.tokens.size }
             Log.d(TAG, "   Total messages to send: $totalMessages")
             Log.d(TAG, "")
 
             var messageNumber = 0
-            for ((parentUid, tokens) in parentTokens) {
-                Log.d(TAG, "   📤 Sending to parent: ${parentUid.take(10)}...")
+            for ((parentUid, data) in parentData) {
+                val childName = data.childName
+                Log.d(TAG, "   📤 Sending to parent: ${parentUid.take(10)}... (Child: $childName)")
 
-                for (token in tokens) {
+                for (token in data.tokens) {
                     messageNumber++
                     Log.d(TAG, "")
                     Log.d(TAG, "   Message $messageNumber/$totalMessages")
@@ -137,7 +133,8 @@ object FcmNotificationSender {
                             fcmToken = token,
                             parentUid = parentUid,
                             childUid = childUid,
-                            title = notificationType.getTitle(),
+                            childName = childName,
+                            title = notificationType.getTitle(childName),
                             body = notificationType.getBody(childName),
                             latitude = latitude,
                             longitude = longitude,
@@ -190,9 +187,17 @@ object FcmNotificationSender {
     }
 
     /**
-     * Retrieves FCM tokens for all parents of a child
+     * Data class to hold parent's FCM tokens and the child's name as defined by that parent
      */
-    private suspend fun getParentFcmTokens(childUid: String): Map<String, List<String>> {
+    private data class ParentData(
+        val tokens: List<String>,
+        val childName: String
+    )
+
+    /**
+     * Retrieves FCM tokens for all parents and gets child name from each parent's children subcollection
+     */
+    private suspend fun getParentFcmTokensAndChildNames(childUid: String): Map<String, ParentData> {
         Log.d(TAG, "      🔍 Querying parents subcollection...")
         return try {
             val db = FirebaseFirestore.getInstance()
@@ -213,7 +218,7 @@ object FcmNotificationSender {
                 return emptyMap()
             }
 
-            val parentTokensMap = mutableMapOf<String, List<String>>()
+            val parentDataMap = mutableMapOf<String, ParentData>()
 
             parentsSnapshot.documents.forEachIndexed { index, parentDoc ->
                 try {
@@ -230,6 +235,11 @@ object FcmNotificationSender {
                     val parentEmail = parentDoc.getString("parentEmail") ?: "unknown"
                     Log.d(TAG, "         Parent UID: ${parentId.take(10)}...")
                     Log.d(TAG, "         Parent Email: $parentEmail")
+
+                    // Get child name from parent's children subcollection
+                    Log.d(TAG, "         🔍 Fetching child name from parent's children subcollection...")
+                    val childName = getChildNameFromParent(parentId, childUid)
+                    Log.d(TAG, "         👶 Child Name: $childName")
 
                     // Query: /users/{parentId}/fcmTokens
                     Log.d(TAG, "         🔍 Querying FCM tokens...")
@@ -259,8 +269,8 @@ object FcmNotificationSender {
                     }
 
                     if (tokens.isNotEmpty()) {
-                        parentTokensMap[parentId] = tokens
-                        Log.d(TAG, "         ✅ Added ${tokens.size} valid token(s)")
+                        parentDataMap[parentId] = ParentData(tokens, childName)
+                        Log.d(TAG, "         ✅ Added ${tokens.size} valid token(s) with child name: $childName")
                     } else {
                         Log.w(TAG, "         ⚠️ No valid tokens extracted")
                     }
@@ -272,28 +282,53 @@ object FcmNotificationSender {
             }
 
             Log.d(TAG, "")
-            Log.d(TAG, "      ✅ Total parents with tokens: ${parentTokensMap.size}")
-            parentTokensMap
+            Log.d(TAG, "      ✅ Total parents with tokens: ${parentDataMap.size}")
+            parentDataMap
 
         } catch (e: Exception) {
-            Log.e(TAG, "      ❌ CRITICAL ERROR in getParentFcmTokens", e)
+            Log.e(TAG, "      ❌ CRITICAL ERROR in getParentFcmTokensAndChildNames", e)
             e.printStackTrace()
             emptyMap()
         }
     }
 
     /**
-     * Gets the child's name from Firestore
+     * Gets the child's name from parent's children subcollection
+     * Path: /users/{parentId}/children/{doc where childId == childUid}
      */
-    private suspend fun getChildName(childUid: String): String? {
+    private suspend fun getChildNameFromParent(parentId: String, childUid: String): String {
         return try {
             val db = FirebaseFirestore.getInstance()
-            val childDoc = db.collection("users").document(childUid).get().await()
-            val email = childDoc.getString("email")
-            email?.substringBefore("@") ?: "Child"
+
+            Log.d(TAG, "            🔍 Querying /users/$parentId/children for child $childUid")
+
+            val childrenSnapshot = db.collection("users")
+                .document(parentId)
+                .collection("children")
+                .whereEqualTo("childId", childUid)
+                .get()
+                .await()
+
+            if (childrenSnapshot.isEmpty) {
+                Log.w(TAG, "            ⚠️ No matching child document found in parent's children subcollection")
+                return "Your child"
+            }
+
+            val childDoc = childrenSnapshot.documents.firstOrNull()
+            val childName = childDoc?.getString("childName")
+
+            if (childName.isNullOrEmpty()) {
+                Log.w(TAG, "            ⚠️ Child name not found or empty, using default")
+                return "Your child"
+            }
+
+            Log.d(TAG, "            ✅ Found child name: $childName")
+            childName
+
         } catch (e: Exception) {
-            Log.e(TAG, "   ❌ Error getting child name", e)
-            null
+            Log.e(TAG, "            ❌ Error getting child name from parent's children subcollection", e)
+            e.printStackTrace()
+            "Your child"
         }
     }
 
@@ -305,6 +340,7 @@ object FcmNotificationSender {
         fcmToken: String,
         parentUid: String,
         childUid: String,
+        childName: String,
         title: String,
         body: String,
         latitude: Double?,
@@ -316,6 +352,7 @@ object FcmNotificationSender {
         try {
             Log.d(TAG, "      🌐 Preparing HTTP request...")
             Log.d(TAG, "         Endpoint: $FCM_ENDPOINT")
+            Log.d(TAG, "         Child Name: $childName")
 
             val url = URL(FCM_ENDPOINT)
             connection = url.openConnection() as HttpURLConnection
@@ -339,6 +376,7 @@ object FcmNotificationSender {
                         put("notificationType", notificationType)
                         put("parentUid", parentUid)
                         put("childUid", childUid)
+                        put("childName", childName) // Include child name in data payload
                         if (latitude != null && longitude != null) {
                             put("latitude", latitude.toString())
                             put("longitude", longitude.toString())
@@ -407,22 +445,22 @@ object FcmNotificationSender {
  */
 enum class NotificationType {
     OUTSIDE_SAFE_ZONE {
-        override fun getTitle() = "⚠️ Safe Zone Alert"
+        override fun getTitle(childName: String) = "⚠️ $childName - Safe Zone Alert"
         override fun getBody(childName: String) = "$childName has left the safe zone"
     },
     LOCATION_DISABLED {
-        override fun getTitle() = "⚠️ Location Disabled"
+        override fun getTitle(childName: String) = "⚠️ $childName - Location Disabled"
         override fun getBody(childName: String) = "$childName has turned off location services"
     },
     CHILD_LOGGED_OUT {
-        override fun getTitle() = "⚠️ App Logged Out"
+        override fun getTitle(childName: String) = "⚠️ $childName - App Logged Out"
         override fun getBody(childName: String) = "$childName has logged out of the safety app"
     },
     EMERGENCY {
-        override fun getTitle() = "🚨 EMERGENCY ALERT"
+        override fun getTitle(childName: String) = "🚨 $childName - EMERGENCY ALERT"
         override fun getBody(childName: String) = "$childName has triggered an emergency alert!"
     };
 
-    abstract fun getTitle(): String
+    abstract fun getTitle(childName: String): String
     abstract fun getBody(childName: String): String
 }

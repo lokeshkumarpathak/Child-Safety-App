@@ -9,9 +9,9 @@
               <option name="connection">
                 <ConnectionSetting>
                   <option name="appId" value="com.example.child_safety_app_version1" />
-                  <option name="mobileSdkAppId" value="1:660284533089:android:1603808923a7bda4eabd20" />
-                  <option name="projectId" value="child-safety-mobile-app" />
-                  <option name="projectNumber" value="660284533089" />
+                  <option name="mobileSdkAppId" value="1:302120586529:android:e7fa437b358e8491a60260" />
+                  <option name="projectId" value="child-safety-c7fea" />
+                  <option name="projectNumber" value="302120586529" />
                 </ConnectionSetting>
               </option>
               <option name="signal" value="SIGNAL_UNSPECIFIED" />

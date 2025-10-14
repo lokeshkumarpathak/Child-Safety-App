@@ -7,7 +7,7 @@ import kotlinx.coroutines.withContext
 import java.io.InputStream
 
 object OAuth2TokenManager {
-    private const val SERVICE_ACCOUNT_FILE = "child-safety-mobile-app-firebase-adminsdk-fbsvc-85d38964d9.json"
+    private const val SERVICE_ACCOUNT_FILE = "child-safety-c7fea-firebase-adminsdk-fbsvc-4eaccaa54c.json"
     private const val FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 
     // Cache for the access token

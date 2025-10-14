@@ -57,7 +57,7 @@ fun NavGraph(shouldOpenNotifications: Boolean = false) {
             ChildDashboard(navController = navController)
         }
         composable("safe_zone") {
-            EnhancedMapScreen()
+            EnhancedMapScreen(navController = navController)
         }
         composable("add_child") {
             AddChildScreen(navController = navController)

@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.navigation.NavController
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
@@ -40,6 +41,13 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
 
+// Data class for Child
+data class Child1(
+    val childId: String = "",
+    val childName: String = "",
+    val childEmail: String = ""
+)
+
 // Data class for search results
 data class SearchResult(
     val displayName: String,
@@ -57,14 +65,13 @@ data class SafeZone(
     val centerLat: Double,
     val centerLon: Double,
     val boundingBox: List<Double>? = null,
-    val radius: Double = 100.0, // Default radius in meters
-    val type: String = "custom"
+    val radius: Double = 100.0,
+    val type: String = "custom",
+    val children: List<String> = emptyList() // List of childId's
 ) {
-    // Helper property for GeoPoint (not stored in Firestore)
     val center: GeoPoint
         get() = GeoPoint(centerLat, centerLon)
 
-    // Convert to Map for Firestore
     fun toMap(): Map<String, Any?> {
         return mapOf(
             "id" to id,
@@ -73,12 +80,12 @@ data class SafeZone(
             "centerLon" to centerLon,
             "boundingBox" to boundingBox,
             "radius" to radius,
-            "type" to type
+            "type" to type,
+            "children" to children
         )
     }
 
     companion object {
-        // Create SafeZone from Firestore document
         fun fromMap(map: Map<String, Any>): SafeZone? {
             return try {
                 SafeZone(
@@ -90,7 +97,8 @@ data class SafeZone(
                         (it as? Number)?.toDouble()
                     },
                     radius = (map["radius"] as? Number)?.toDouble() ?: 100.0,
-                    type = map["type"] as? String ?: "custom"
+                    type = map["type"] as? String ?: "custom",
+                    children = (map["children"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
                 )
             } catch (e: Exception) {
                 Log.e("SafeZone", "Error parsing SafeZone: ${e.message}")
@@ -102,7 +110,7 @@ data class SafeZone(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EnhancedMapScreen() {
+fun EnhancedMapScreen(navController: NavController? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val auth = FirebaseAuth.getInstance()
@@ -121,12 +129,14 @@ fun EnhancedMapScreen() {
     var isLoadingSafeZones by remember { mutableStateOf(true) }
     var isSavingZone by remember { mutableStateOf(false) }
 
+    var allChildren by remember { mutableStateOf<List<Child1>>(emptyList()) }
+    var isLoadingChildren by remember { mutableStateOf(false) }
+
     fun addSafeZoneOverlay(map: MapView?, safeZone: SafeZone) {
         map?.let {
             val polygon = Polygon(it)
 
             if (safeZone.boundingBox != null && safeZone.boundingBox.size >= 4) {
-                // Create rectangle from bounding box [minLat, maxLat, minLon, maxLon]
                 val points = listOf(
                     GeoPoint(safeZone.boundingBox[0], safeZone.boundingBox[2]),
                     GeoPoint(safeZone.boundingBox[0], safeZone.boundingBox[3]),
@@ -136,13 +146,12 @@ fun EnhancedMapScreen() {
                 )
                 polygon.points = points
             } else {
-                // Create circular boundary
                 val points = createCirclePoints(safeZone.center, safeZone.radius)
                 polygon.points = points
             }
 
-            polygon.fillColor = 0x3000FF00.toInt() // Semi-transparent green
-            polygon.strokeColor = 0xFF00FF00.toInt() // Solid green
+            polygon.fillColor = 0x3000FF00.toInt()
+            polygon.strokeColor = 0xFF00FF00.toInt()
             polygon.strokeWidth = 3f
             polygon.title = safeZone.name
 
@@ -151,30 +160,57 @@ fun EnhancedMapScreen() {
         }
     }
 
-    // Refresh all safe zone overlays
     fun refreshSafeZones() {
         mapView?.let { map ->
-            // Remove existing polygons
             map.overlays.removeAll { it is Polygon }
-            // Add all safe zones
             safeZones.forEach { addSafeZoneOverlay(map, it) }
             map.invalidate()
         }
     }
 
-    // Initialize OSMDroid configuration
+    // Load children from Firestore
+    suspend fun loadChildren(): List<Child1> {
+        val uid = auth.currentUser?.uid ?: return emptyList()
+        return try {
+            val snapshot = firestore.collection("users")
+                .document(uid)
+                .collection("children")
+                .get()
+                .await()
+
+            snapshot.documents.mapNotNull { doc ->
+                try {
+                    Child1(
+                        childId = doc.getString("childId") ?: "",
+                        childName = doc.getString("childName") ?: "",
+                        childEmail = doc.getString("childEmail") ?: ""
+                    )
+                } catch (e: Exception) {
+                    Log.e("LoadChildren", "Error parsing child: ${e.message}")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("LoadChildren", "Error loading children: ${e.message}")
+            emptyList()
+        }
+    }
+
     LaunchedEffect(Unit) {
         Configuration.getInstance().apply {
             userAgentValue = context.packageName
         }
     }
 
-    // Load Safe Zones from Firestore on startup
     LaunchedEffect(Unit) {
         val uid = auth.currentUser?.uid
         if (uid != null) {
             scope.launch {
                 try {
+                    // Load children
+                    allChildren = loadChildren()
+
+                    // Load safe zones
                     val snapshot = firestore.collection("users")
                         .document(uid)
                         .collection("safeZones")
@@ -188,7 +224,6 @@ fun EnhancedMapScreen() {
                     safeZones = loadedZones
                     isLoadingSafeZones = false
 
-                    // Add overlays for loaded zones after a small delay to ensure map is ready
                     kotlinx.coroutines.delay(500)
                     loadedZones.forEach { zone ->
                         addSafeZoneOverlay(mapView, zone)
@@ -203,9 +238,6 @@ fun EnhancedMapScreen() {
         }
     }
 
-
-
-    // Function to save Safe Zone to Firestore
     fun saveSafeZoneToFirestore(safeZone: SafeZone, onComplete: (Boolean) -> Unit) {
         val uid = auth.currentUser?.uid
         if (uid == null) {
@@ -228,7 +260,6 @@ fun EnhancedMapScreen() {
             }
     }
 
-    // Function to delete Safe Zone from Firestore
     fun deleteSafeZoneFromFirestore(zoneId: String, onComplete: (Boolean) -> Unit) {
         val uid = auth.currentUser?.uid
         if (uid == null) {
@@ -251,7 +282,6 @@ fun EnhancedMapScreen() {
             }
     }
 
-    // Search function using Nominatim API
     fun performSearch(query: String) {
         if (query.isBlank()) {
             showResults = false
@@ -276,11 +306,7 @@ fun EnhancedMapScreen() {
         }
     }
 
-    // Function to add polygon overlay for safe zone
-
-
     Box(modifier = Modifier.fillMaxSize()) {
-        // Map View
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -305,7 +331,6 @@ fun EnhancedMapScreen() {
             }
         )
 
-        // Loading indicator for safe zones
         if (isLoadingSafeZones) {
             CircularProgressIndicator(
                 modifier = Modifier
@@ -314,7 +339,6 @@ fun EnhancedMapScreen() {
             )
         }
 
-        // Search Bar at the top
         Card(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -381,7 +405,6 @@ fun EnhancedMapScreen() {
                     }
                 }
 
-                // Search Results Dropdown
                 AnimatedVisibility(visible = showResults && searchResults.isNotEmpty()) {
                     Divider()
                     LazyColumn(
@@ -400,7 +423,6 @@ fun EnhancedMapScreen() {
                                         )
                                         mapView?.controller?.setZoom(15.0)
 
-                                        // Add marker for searched location
                                         mapView?.let { map ->
                                             val marker = Marker(map)
                                             marker.position = GeoPoint(result.lat, result.lon)
@@ -440,7 +462,6 @@ fun EnhancedMapScreen() {
             }
         }
 
-        // Floating Action Buttons
         Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
@@ -480,7 +501,6 @@ fun EnhancedMapScreen() {
             }
         }
 
-        // Information Card
         Card(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -504,10 +524,12 @@ fun EnhancedMapScreen() {
         }
     }
 
-    // Add Safe Zone Dialog
+    // Add Safe Zone Dialog with Child Selection
     if (showAddSafeZoneDialog && selectedSearchResult != null) {
         var zoneName by remember { mutableStateOf(selectedSearchResult!!.displayName) }
         var showError by remember { mutableStateOf(false) }
+        var errorMessage by remember { mutableStateOf("") }
+        var selectedChildren by remember { mutableStateOf<Set<String>>(emptySet()) }
 
         AlertDialog(
             onDismissRequest = {
@@ -517,9 +539,14 @@ fun EnhancedMapScreen() {
             },
             title = { Text("Add Safe Zone") },
             text = {
-                Column {
-                    Text("Add this location as a safe zone?")
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 500.dp)
+                ) {
+                    Text("Add this location as a safe zone")
                     Spacer(modifier = Modifier.height(16.dp))
+
                     OutlinedTextField(
                         value = zoneName,
                         onValueChange = {
@@ -529,16 +556,140 @@ fun EnhancedMapScreen() {
                         label = { Text("Zone Name") },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !isSavingZone,
-                        isError = showError
+                        isError = showError && errorMessage.contains("name")
                     )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Select Children for this Safe Zone:",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    if (allChildren.isEmpty()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "No children added yet!",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "You need to add children before creating safe zones.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = {
+                                        showAddSafeZoneDialog = false
+                                        navController?.navigate("add_child")
+                                    }
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Add Child")
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(allChildren) { child ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isSavingZone) {
+                                            selectedChildren = if (child.childId in selectedChildren) {
+                                                selectedChildren - child.childId
+                                            } else {
+                                                selectedChildren + child.childId
+                                            }
+                                            showError = false
+                                        },
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (child.childId in selectedChildren)
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        else
+                                            MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = child.childName,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Text(
+                                                text = child.childEmail,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Checkbox(
+                                            checked = child.childId in selectedChildren,
+                                            onCheckedChange = null,
+                                            enabled = !isSavingZone
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (allChildren.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = {
+                                    showAddSafeZoneDialog = false
+                                    navController?.navigate("add_child")
+                                },
+                                enabled = !isSavingZone
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Add More Children")
+                            }
+                        }
+                    }
+
                     if (showError) {
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Please enter a zone name",
+                            text = errorMessage,
                             color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp)
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
+
                     if (isSavingZone) {
                         Row(
                             modifier = Modifier
@@ -556,40 +707,49 @@ fun EnhancedMapScreen() {
             confirmButton = {
                 Button(
                     onClick = {
-                        if (zoneName.trim().isEmpty()) {
-                            showError = true
-                            return@Button
-                        }
+                        when {
+                            zoneName.trim().isEmpty() -> {
+                                showError = true
+                                errorMessage = "Please enter a zone name"
+                                return@Button
+                            }
+                            selectedChildren.isEmpty() -> {
+                                showError = true
+                                errorMessage = "Please select at least one child"
+                                return@Button
+                            }
+                            else -> {
+                                isSavingZone = true
+                                val newZone = SafeZone(
+                                    name = zoneName.trim(),
+                                    centerLat = selectedSearchResult!!.lat,
+                                    centerLon = selectedSearchResult!!.lon,
+                                    boundingBox = selectedSearchResult!!.boundingBox,
+                                    type = selectedSearchResult!!.type,
+                                    children = selectedChildren.toList()
+                                )
 
-                        isSavingZone = true
-                        val newZone = SafeZone(
-                            name = zoneName.trim(),
-                            centerLat = selectedSearchResult!!.lat,
-                            centerLon = selectedSearchResult!!.lon,
-                            boundingBox = selectedSearchResult!!.boundingBox,
-                            type = selectedSearchResult!!.type
-                        )
-
-                        saveSafeZoneToFirestore(newZone) { success ->
-                            isSavingZone = false
-                            if (success) {
-                                safeZones = safeZones + newZone
-                                addSafeZoneOverlay(mapView, newZone)
-                                showAddSafeZoneDialog = false
-                                selectedSearchResult = null
-                            } else {
-                                // Show error toast or message
-                                scope.launch {
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "Failed to save safe zone",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
+                                saveSafeZoneToFirestore(newZone) { success ->
+                                    isSavingZone = false
+                                    if (success) {
+                                        safeZones = safeZones + newZone
+                                        addSafeZoneOverlay(mapView, newZone)
+                                        showAddSafeZoneDialog = false
+                                        selectedSearchResult = null
+                                    } else {
+                                        scope.launch {
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                "Failed to save safe zone",
+                                                android.widget.Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
                                 }
                             }
                         }
                     },
-                    enabled = !isSavingZone
+                    enabled = !isSavingZone && allChildren.isNotEmpty()
                 ) {
                     Text("Add Safe Zone")
                 }
@@ -653,64 +813,74 @@ fun EnhancedMapScreen() {
                                         containerColor = MaterialTheme.colorScheme.primaryContainer
                                     )
                                 ) {
-                                    Row(
+                                    Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(12.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                            .padding(12.dp)
                                     ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = zone.name,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            if (zone.type.isNotEmpty()) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
                                                 Text(
-                                                    text = zone.type,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    text = zone.name,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.SemiBold
                                                 )
-                                            }
-                                        }
-                                        Row {
-                                            IconButton(
-                                                onClick = {
-                                                    mapView?.controller?.animateTo(zone.center)
-                                                    mapView?.controller?.setZoom(15.0)
-                                                    showSafeZonesDialog = false
+                                                if (zone.type.isNotEmpty()) {
+                                                    Text(
+                                                        text = zone.type,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
                                                 }
-                                            ) {
-                                                Icon(
-                                                    Icons.Default.LocationOn,
-                                                    "Show on map",
-                                                    tint = MaterialTheme.colorScheme.primary
+                                                Text(
+                                                    text = "${zone.children.size} child${if (zone.children.size != 1) "ren" else ""}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.Medium
                                                 )
                                             }
-                                            IconButton(
-                                                onClick = {
-                                                    deleteSafeZoneFromFirestore(zone.id) { success ->
-                                                        if (success) {
-                                                            safeZones = safeZones.filter { it.id != zone.id }
-                                                            refreshSafeZones()
-                                                        } else {
-                                                            scope.launch {
-                                                                android.widget.Toast.makeText(
-                                                                    context,
-                                                                    "Failed to delete safe zone",
-                                                                    android.widget.Toast.LENGTH_SHORT
-                                                                ).show()
+                                            Row {
+                                                IconButton(
+                                                    onClick = {
+                                                        mapView?.controller?.animateTo(zone.center)
+                                                        mapView?.controller?.setZoom(15.0)
+                                                        showSafeZonesDialog = false
+                                                    }
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.LocationOn,
+                                                        "Show on map",
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        deleteSafeZoneFromFirestore(zone.id) { success ->
+                                                            if (success) {
+                                                                safeZones = safeZones.filter { it.id != zone.id }
+                                                                refreshSafeZones()
+                                                            } else {
+                                                                scope.launch {
+                                                                    android.widget.Toast.makeText(
+                                                                        context,
+                                                                        "Failed to delete safe zone",
+                                                                        android.widget.Toast.LENGTH_SHORT
+                                                                    ).show()
+                                                                }
                                                             }
                                                         }
                                                     }
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Delete,
+                                                        "Delete",
+                                                        tint = MaterialTheme.colorScheme.error
+                                                    )
                                                 }
-                                            ) {
-                                                Icon(
-                                                    Icons.Default.Delete,
-                                                    "Delete",
-                                                    tint = MaterialTheme.colorScheme.error
-                                                )
                                             }
                                         }
                                     }

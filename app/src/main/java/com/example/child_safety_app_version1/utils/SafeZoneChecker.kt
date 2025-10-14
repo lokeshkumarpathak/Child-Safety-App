@@ -15,7 +15,8 @@ data class SafeZone(
     val centerLon: Double,
     val boundingBox: List<Double>?,
     val radius: Double,
-    val type: String
+    val type: String,
+    val children: List<String> = emptyList() // List of child IDs this safe zone applies to
 )
 
 object SafeZoneChecker {
@@ -23,7 +24,24 @@ object SafeZoneChecker {
     private const val EARTH_RADIUS_METERS = 6371000.0
 
     /**
-     * Check if a location is inside any of the child's parent's safe zones
+     * Check if a child has any applicable safe zones defined
+     * Returns true if at least one safe zone applies to this child
+     */
+    suspend fun hasApplicableSafeZones(childUid: String): Boolean {
+        return try {
+            val safeZones = getAllSafeZonesForChild(childUid)
+            val hasZones = safeZones.isNotEmpty()
+
+            Log.d(TAG, "Child $childUid has ${safeZones.size} applicable safe zone(s)")
+            hasZones
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking if child has safe zones", e)
+            false
+        }
+    }
+
+    /**
+     * Check if a location is inside any of the child's applicable safe zones
      */
     suspend fun isLocationInAnySafeZone(
         childUid: String,
@@ -34,11 +52,11 @@ object SafeZoneChecker {
             val safeZones = getAllSafeZonesForChild(childUid)
 
             if (safeZones.isEmpty()) {
-                Log.w(TAG, "No safe zones found for child $childUid")
-                return true // If no safe zones defined, consider child safe
+                Log.w(TAG, "No applicable safe zones found for child $childUid")
+                return true // If no safe zones defined, consider child safe (avoid false alarms)
             }
 
-            Log.d(TAG, "Checking ${safeZones.size} safe zone(s)")
+            Log.d(TAG, "Checking location against ${safeZones.size} applicable safe zone(s)")
 
             for (zone in safeZones) {
                 val isInside = if (zone.boundingBox != null && zone.boundingBox.size >= 4) {
@@ -48,12 +66,12 @@ object SafeZoneChecker {
                 }
 
                 if (isInside) {
-                    Log.d(TAG, "Location IS inside safe zone: ${zone.name}")
+                    Log.d(TAG, "✓ Location IS inside safe zone: ${zone.name}")
                     return true
                 }
             }
 
-            Log.d(TAG, "Location is NOT inside any safe zone")
+            Log.d(TAG, "✗ Location is NOT inside any applicable safe zone")
             false
 
         } catch (e: Exception) {
@@ -64,6 +82,7 @@ object SafeZoneChecker {
 
     /**
      * Get all safe zones for a child by querying all their parents' safe zones
+     * and filtering for zones that include this child in their 'children' array
      */
     private suspend fun getAllSafeZonesForChild(childUid: String): List<SafeZone> {
         val db = FirebaseFirestore.getInstance()
@@ -77,19 +96,19 @@ object SafeZoneChecker {
                 .get()
                 .await()
 
-            Log.d(TAG, "Found ${parentsSnapshot.size()} parent(s)")
+            Log.d(TAG, "Found ${parentsSnapshot.size()} parent(s) for child")
 
-            // For each parent, get their safe zones
+            // For each parent, get their safe zones that apply to this child
             for (parentDoc in parentsSnapshot.documents) {
                 val parentId = parentDoc.getString("parentId")
                 if (parentId != null) {
-                    val parentSafeZones = getSafeZonesForParent(parentId)
+                    val parentSafeZones = getSafeZonesForParent(parentId, childUid)
                     allSafeZones.addAll(parentSafeZones)
-                    Log.d(TAG, "Parent $parentId has ${parentSafeZones.size} safe zone(s)")
+                    Log.d(TAG, "Parent ${parentId.take(10)}... has ${parentSafeZones.size} safe zone(s) applicable to this child")
                 }
             }
 
-            Log.d(TAG, "Total safe zones collected: ${allSafeZones.size}")
+            Log.d(TAG, "Total applicable safe zones collected: ${allSafeZones.size}")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error getting safe zones for child", e)
@@ -99,9 +118,10 @@ object SafeZoneChecker {
     }
 
     /**
-     * Get safe zones for a specific parent
+     * Get safe zones for a specific parent that apply to the given child
+     * Only returns zones where the child's ID is in the 'children' array
      */
-    private suspend fun getSafeZonesForParent(parentUid: String): List<SafeZone> {
+    private suspend fun getSafeZonesForParent(parentUid: String, childUid: String): List<SafeZone> {
         val db = FirebaseFirestore.getInstance()
         val safeZones = mutableListOf<SafeZone>()
 
@@ -112,20 +132,34 @@ object SafeZoneChecker {
                 .get()
                 .await()
 
+            Log.d(TAG, "Found ${zonesSnapshot.size()} total safe zone(s) for parent")
+
             for (zoneDoc in zonesSnapshot.documents) {
                 try {
-                    val zone = SafeZone(
-                        id = zoneDoc.getString("id") ?: zoneDoc.id,
-                        name = zoneDoc.getString("name") ?: "Unnamed Zone",
-                        centerLat = (zoneDoc.get("centerLat") as? Number)?.toDouble() ?: 0.0,
-                        centerLon = (zoneDoc.get("centerLon") as? Number)?.toDouble() ?: 0.0,
-                        boundingBox = (zoneDoc.get("boundingBox") as? List<*>)?.mapNotNull {
-                            (it as? Number)?.toDouble()
-                        },
-                        radius = (zoneDoc.get("radius") as? Number)?.toDouble() ?: 100.0,
-                        type = zoneDoc.getString("type") ?: "custom"
-                    )
-                    safeZones.add(zone)
+                    // Get the children array from the safe zone
+                    val childrenList = (zoneDoc.get("children") as? List<*>)?.mapNotNull {
+                        it as? String
+                    } ?: emptyList()
+
+                    // Only include this safe zone if it applies to the current child
+                    if (childrenList.contains(childUid)) {
+                        val zone = SafeZone(
+                            id = zoneDoc.getString("id") ?: zoneDoc.id,
+                            name = zoneDoc.getString("name") ?: "Unnamed Zone",
+                            centerLat = (zoneDoc.get("centerLat") as? Number)?.toDouble() ?: 0.0,
+                            centerLon = (zoneDoc.get("centerLon") as? Number)?.toDouble() ?: 0.0,
+                            boundingBox = (zoneDoc.get("boundingBox") as? List<*>)?.mapNotNull {
+                                (it as? Number)?.toDouble()
+                            },
+                            radius = (zoneDoc.get("radius") as? Number)?.toDouble() ?: 100.0,
+                            type = zoneDoc.getString("type") ?: "custom",
+                            children = childrenList
+                        )
+                        safeZones.add(zone)
+                        Log.d(TAG, "✓ Safe zone '${zone.name}' applies to child ${childUid.take(10)}...")
+                    } else {
+                        Log.d(TAG, "✗ Safe zone '${zoneDoc.getString("name")}' does NOT apply to child ${childUid.take(10)}... (applies to ${childrenList.size} other child(ren))")
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing safe zone: ${zoneDoc.id}", e)
                 }

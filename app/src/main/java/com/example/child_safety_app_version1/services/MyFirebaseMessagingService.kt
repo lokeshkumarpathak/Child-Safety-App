@@ -60,11 +60,13 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         val longitude = message.data["longitude"]?.toDoubleOrNull()
         val parentUid = message.data["parentUid"]
         val childUid = message.data["childUid"] ?: ""
+        val childName = message.data["childName"] ?: "Your child" // Extract child name from payload
 
         Log.d(TAG, "Parsed Data:")
         Log.d(TAG, "  - Title: $title")
         Log.d(TAG, "  - Body: $body")
         Log.d(TAG, "  - Type: $notificationType")
+        Log.d(TAG, "  - Child Name: $childName")
         Log.d(TAG, "  - Location: $latitude, $longitude")
         Log.d(TAG, "  - Parent UID: ${parentUid?.take(10)}...")
         Log.d(TAG, "  - Child UID: ${childUid.take(10)}...")
@@ -83,6 +85,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         saveNotificationToFirestore(
             parentUid = targetParentUid,
             childUid = childUid,
+            childName = childName,
             title = title,
             body = body,
             notificationType = notificationType,
@@ -93,10 +96,10 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         // Show system notification
         when (notificationType) {
             "OUTSIDE_SAFE_ZONE" -> {
-                showOrUpdateOutsideSafeZoneNotification(title, body, latitude, longitude)
+                showOrUpdateOutsideSafeZoneNotification(title, body, childName, latitude, longitude)
             }
             else -> {
-                showNotification(title, body, notificationType, latitude, longitude, System.currentTimeMillis().toInt())
+                showNotification(title, body, childName, notificationType, latitude, longitude, System.currentTimeMillis().toInt())
             }
         }
     }
@@ -104,16 +107,18 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     private fun showOrUpdateOutsideSafeZoneNotification(
         title: String,
         body: String,
+        childName: String,
         latitude: Double?,
         longitude: Double?
     ) {
         try {
-            Log.d(TAG, "📱 Showing/updating OUTSIDE_SAFE_ZONE notification...")
+            Log.d(TAG, "📱 Showing/updating OUTSIDE_SAFE_ZONE notification for $childName...")
 
             val intent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra("open_notifications", true)
                 putExtra("notificationType", "OUTSIDE_SAFE_ZONE")
+                putExtra("childName", childName)
                 if (latitude != null && longitude != null) {
                     putExtra("latitude", latitude.toString())
                     putExtra("longitude", longitude.toString())
@@ -137,7 +142,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
             val notificationBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle(title)
+                .setContentTitle(title) // Title already includes child name from server
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(fullBody))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -151,7 +156,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(OUTSIDE_SAFE_ZONE_NOTIFICATION_ID, notificationBuilder.build())
 
-            Log.d(TAG, "✅ Notification displayed with ID: $OUTSIDE_SAFE_ZONE_NOTIFICATION_ID")
+            Log.d(TAG, "✅ Notification displayed for $childName with ID: $OUTSIDE_SAFE_ZONE_NOTIFICATION_ID")
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error displaying notification", e)
@@ -162,18 +167,20 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     private fun showNotification(
         title: String,
         body: String,
+        childName: String,
         notificationType: String,
         latitude: Double?,
         longitude: Double?,
         notificationId: Int
     ) {
         try {
-            Log.d(TAG, "📱 Showing notification type: $notificationType")
+            Log.d(TAG, "📱 Showing notification type: $notificationType for $childName")
 
             val intent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra("open_notifications", true)
                 putExtra("notificationType", notificationType)
+                putExtra("childName", childName)
                 if (latitude != null && longitude != null) {
                     putExtra("latitude", latitude.toString())
                     putExtra("longitude", longitude.toString())
@@ -189,7 +196,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
             val notificationBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(title)
+                .setContentTitle(title) // Title already includes child name from server
                 .setContentText(body)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
@@ -200,7 +207,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(notificationId, notificationBuilder.build())
 
-            Log.d(TAG, "✅ Notification displayed with ID: $notificationId")
+            Log.d(TAG, "✅ Notification displayed for $childName with ID: $notificationId")
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error displaying notification", e)
@@ -215,6 +222,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     private fun saveNotificationToFirestore(
         parentUid: String,
         childUid: String,
+        childName: String,
         title: String,
         body: String,
         notificationType: String,
@@ -225,6 +233,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             Log.d(TAG, "💾 Starting Firestore save operation...")
             Log.d(TAG, "  Parent UID: ${parentUid.take(10)}...")
             Log.d(TAG, "  Child UID: ${childUid.take(10)}...")
+            Log.d(TAG, "  Child Name: $childName")
             Log.d(TAG, "  Type: $notificationType")
 
             val db = FirebaseFirestore.getInstance()
@@ -241,7 +250,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                     "body" to body,
                     "type" to notificationType,
                     "timestamp" to System.currentTimeMillis(),
-                    "childUid" to childUid
+                    "childUid" to childUid,
+                    "childName" to childName // Store child name in Firestore
                 )
 
                 // Add latitude/longitude as Double (not String) if available
@@ -270,24 +280,25 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                                 "body" to body,
                                 "latitude" to (latitude ?: ""),
                                 "longitude" to (longitude ?: ""),
-                                "timestamp" to System.currentTimeMillis()
+                                "timestamp" to System.currentTimeMillis(),
+                                "childName" to childName // Update child name
                             )
 
                             docRef.update(updateData)
                                 .addOnSuccessListener {
-                                    Log.d(TAG, "✅ Successfully UPDATED notification $documentId")
+                                    Log.d(TAG, "✅ Successfully UPDATED notification $documentId for $childName")
                                 }
                                 .addOnFailureListener { e ->
                                     Log.e(TAG, "❌ Failed to UPDATE notification", e)
                                 }
                         } else {
                             // Document doesn't exist - CREATE with read=false
-                            Log.d(TAG, "✨ Creating NEW notification")
+                            Log.d(TAG, "✨ Creating NEW notification for $childName")
                             notificationData["read"] = false
 
                             docRef.set(notificationData)
                                 .addOnSuccessListener {
-                                    Log.d(TAG, "✅ Successfully CREATED notification $documentId")
+                                    Log.d(TAG, "✅ Successfully CREATED notification $documentId for $childName")
                                 }
                                 .addOnFailureListener { e ->
                                     Log.e(TAG, "❌ Failed to CREATE notification", e)
@@ -303,8 +314,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
             } else {
                 // For other notification types, always create new document
-                Log.d(TAG, "📄 Creating new notification with auto-generated ID")
-                createNewNotification(parentUid, childUid, title, body, notificationType, latitude, longitude)
+                Log.d(TAG, "📄 Creating new notification with auto-generated ID for $childName")
+                createNewNotification(parentUid, childUid, childName, title, body, notificationType, latitude, longitude)
             }
 
         } catch (e: Exception) {
@@ -319,6 +330,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     private fun createNewNotification(
         parentUid: String,
         childUid: String,
+        childName: String,
         title: String,
         body: String,
         notificationType: String,
@@ -335,7 +347,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             "longitude" to (longitude ?: ""),
             "timestamp" to System.currentTimeMillis(),
             "read" to false,
-            "childUid" to childUid
+            "childUid" to childUid,
+            "childName" to childName // Store child name
         )
 
         db.collection("users")
@@ -343,7 +356,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
             .collection("notifications")
             .add(notificationData)
             .addOnSuccessListener { documentReference ->
-                Log.d(TAG, "✅ Created new notification: ${documentReference.id}")
+                Log.d(TAG, "✅ Created new notification: ${documentReference.id} for $childName")
                 Log.d(TAG, "   Type: $notificationType")
             }
             .addOnFailureListener { e ->

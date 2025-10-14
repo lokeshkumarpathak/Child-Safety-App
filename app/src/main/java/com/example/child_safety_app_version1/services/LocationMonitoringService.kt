@@ -30,17 +30,19 @@ class LocationMonitoringService : Service() {
         private const val LOCATION_UPDATE_INTERVAL = 30 * 1000L // 30 seconds
         private const val LOCATION_FASTEST_INTERVAL = 15 * 1000L // 15 seconds
         private const val LOCATION_CHECK_INTERVAL = 5 * 1000L // Check every 5 seconds for location status
+        private const val ALERT_THROTTLE_INTERVAL = 60 * 1000L // Send alert every 60 seconds when outside
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var isMonitoring = false
     private var wasInsideSafeZone: Boolean? = null // null means first check
-    private var lastNotificationTime = 0L
+    private var lastOutsideAlertTime = 0L // For throttling outside alerts
     private var lastLocationDisabledNotificationTime = 0L
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var isFirstCheck = true
     private var wasLocationEnabled = true // Track previous location state
+    private var hasApplicableSafeZones: Boolean? = null // Track if child has any safe zones
 
     override fun onCreate() {
         super.onCreate()
@@ -57,6 +59,9 @@ class LocationMonitoringService : Service() {
 
         val notification = createForegroundNotification("Monitoring your safety zone")
         startForeground(NOTIFICATION_ID, notification)
+
+        // Check if child has applicable safe zones
+        checkApplicableSafeZones()
 
         // Get immediate location check when service starts
         getImmediateLocation()
@@ -82,6 +87,33 @@ class LocationMonitoringService : Service() {
                     Log.w(TAG, "Location not available - services may be disabled")
                     checkLocationSettings()
                 }
+            }
+        }
+    }
+
+    /**
+     * Check if the current child has any applicable safe zones defined
+     */
+    private fun checkApplicableSafeZones() {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid
+        if (uid == null) {
+            Log.e(TAG, "No user logged in")
+            return
+        }
+
+        serviceScope.launch {
+            try {
+                val hasSafeZones = SafeZoneChecker.hasApplicableSafeZones(childUid = uid)
+                hasApplicableSafeZones = hasSafeZones
+
+                if (!hasSafeZones) {
+                    Log.w(TAG, "⚠️ Child has no applicable safe zones defined")
+                    updateForegroundNotification("No safe zones defined for you")
+                } else {
+                    Log.d(TAG, "✓ Child has applicable safe zones")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error checking applicable safe zones", e)
             }
         }
     }
@@ -190,63 +222,81 @@ class LocationMonitoringService : Service() {
 
         serviceScope.launch {
             try {
+                // Check if child has any safe zones assigned
+                val hasSafeZones = hasApplicableSafeZones ?: SafeZoneChecker.hasApplicableSafeZones(childUid = uid)
+
+                if (!hasSafeZones) {
+                    Log.d(TAG, "Child has no applicable safe zones - skipping check")
+                    updateForegroundNotification("No safe zones defined for you")
+                    wasInsideSafeZone = null // Reset state
+                    return@launch
+                }
+
                 val isInSafeZone = SafeZoneChecker.isLocationInAnySafeZone(
                     childUid = uid,
                     latitude = location.latitude,
                     longitude = location.longitude
                 )
 
-                Log.d(TAG, "Location check: isInSafeZone = $isInSafeZone, wasInside = $wasInsideSafeZone, isFirstCheck = $isFirstCheck")
+                Log.d(TAG, "Location check: isInSafeZone = $isInSafeZone, wasInside = $wasInsideSafeZone")
 
-                // First time check - immediate notification if outside
-                if (wasInsideSafeZone == null || isFirstCheck) {
-                    Log.d(TAG, "First location check")
-                    wasInsideSafeZone = isInSafeZone
-                    isFirstCheck = false
-
-                    if (!isInSafeZone) {
-                        // Child is outside safe zone on startup - send immediate notification
-                        Log.w(TAG, "Child is OUTSIDE safe zone on first check! Sending immediate notification...")
-                        sendOutsideSafeZoneNotification(
-                            latitude = location.latitude,
-                            longitude = location.longitude,
-                            immediate = true
-                        )
-                        updateForegroundNotification("⚠️ Outside safe zone")
-                    } else {
-                        Log.d(TAG, "Child is inside safe zone")
-                        updateForegroundNotification("✓ Inside safe zone")
-                    }
-                    return@launch
-                }
-
-                // Detect zone boundary crossing
+                // Handle based on current status
                 when {
-                    wasInsideSafeZone == true && !isInSafeZone -> {
-                        // Child LEFT the safe zone
-                        Log.w(TAG, "Child left safe zone!")
-                        sendOutsideSafeZoneNotification(location.latitude, location.longitude)
-                        updateForegroundNotification("⚠️ Outside safe zone")
-                    }
-                    wasInsideSafeZone == false && isInSafeZone -> {
-                        // Child ENTERED the safe zone
-                        Log.d(TAG, "Child entered safe zone")
+                    isInSafeZone -> {
+                        // Child is INSIDE a safe zone
+                        Log.d(TAG, "✓ Child is inside safe zone")
                         updateForegroundNotification("✓ Inside safe zone")
-                        // Reset notification throttle when entering safe zone
-                        lastNotificationTime = 0L
+
+                        // If transitioning from outside to inside, log it
+                        if (wasInsideSafeZone == false) {
+                            Log.d(TAG, "Child entered safe zone from outside")
+                        }
+
+                        wasInsideSafeZone = true
+                        isFirstCheck = false
+                        // Reset alert throttle when entering safe zone
+                        lastOutsideAlertTime = 0L
                     }
-                    wasInsideSafeZone == false && !isInSafeZone -> {
-                        // Still outside - send periodic location updates every 30 seconds
-                        Log.d(TAG, "Child still outside safe zone - sending location update")
-                        sendOutsideSafeZoneNotification(location.latitude, location.longitude)
+
+                    !isInSafeZone -> {
+                        // Child is OUTSIDE all safe zones
+                        Log.w(TAG, "⚠️ Child is outside safe zone")
+                        updateForegroundNotification("⚠️ Outside safe zone")
+
+                        // Send alert to parents
+                        sendOutsideAlertIfNeeded(location)
+
+                        wasInsideSafeZone = false
+                        isFirstCheck = false
                     }
                 }
-
-                wasInsideSafeZone = isInSafeZone
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error checking safe zone", e)
             }
+        }
+    }
+
+    /**
+     * Send alert to parents when child is outside safe zone
+     * Throttled to avoid spam - sends immediately on first detection,
+     * then every 60 seconds while child remains outside
+     */
+    private fun sendOutsideAlertIfNeeded(location: Location) {
+        val currentTime = System.currentTimeMillis()
+        val timeSinceLastAlert = currentTime - lastOutsideAlertTime
+
+        // Send immediately if first alert, otherwise throttle to 60 seconds
+        if (lastOutsideAlertTime == 0L || timeSinceLastAlert >= ALERT_THROTTLE_INTERVAL) {
+            Log.d(TAG, "Sending outside safe zone alert (time since last: ${timeSinceLastAlert}ms)")
+            sendOutsideSafeZoneNotification(
+                latitude = location.latitude,
+                longitude = location.longitude
+            )
+            lastOutsideAlertTime = currentTime
+        } else {
+            val timeUntilNext = (ALERT_THROTTLE_INTERVAL - timeSinceLastAlert) / 1000
+            Log.d(TAG, "Alert throttled - next alert in ${timeUntilNext}s")
         }
     }
 
@@ -288,34 +338,20 @@ class LocationMonitoringService : Service() {
 
     private fun sendOutsideSafeZoneNotification(
         latitude: Double,
-        longitude: Double,
-        immediate: Boolean = false
+        longitude: Double
     ) {
-        val currentTime = System.currentTimeMillis()
-
-        // For immediate notifications (first check), skip throttle
-        // For regular updates, throttle to once every 30 seconds
-        if (!immediate && currentTime - lastNotificationTime < 30 * 1000) {
-            Log.d(TAG, "Notification throttled - too soon since last notification")
-            return
-        }
-        lastNotificationTime = currentTime
-
         val uid = FirebaseAuth.getInstance().currentUser?.uid
         if (uid == null) {
             Log.e(TAG, "Cannot send notification - no user UID")
             return
         }
 
-        Log.d(TAG, "Preparing to send outside safe zone notification...")
+        Log.d(TAG, "Sending outside safe zone notification")
         Log.d(TAG, "Child UID: ${uid.take(10)}...")
         Log.d(TAG, "Location: $latitude, $longitude")
-        Log.d(TAG, "Immediate: $immediate")
 
         serviceScope.launch {
             try {
-                Log.d(TAG, "Calling FcmNotificationSender.sendNotificationToParents...")
-
                 val success = FcmNotificationSender.sendNotificationToParents(
                     context = this@LocationMonitoringService,
                     childUid = uid,
