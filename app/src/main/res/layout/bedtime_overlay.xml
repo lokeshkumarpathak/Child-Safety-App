@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@drawable/bedtime_gradient_background"
+    android:padding="32dp">
+
+    <!-- Sleep Mode Icon and Title -->
+    <TextView
+        android:id="@+id/bedtimeTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🌙 Bedtime Mode"
+        android:textSize="40sp"
+        android:textColor="#ffffff"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Message -->
+    <TextView
+        android:id="@+id/bedtimeMessage"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Time to rest and recharge!\n\nYour device is in bedtime mode.\nOnly emergency calls allowed."
+        android:textSize="18sp"
+        android:textColor="#e0e0e0"
+        android:gravity="center"
+        android:lineSpacingMultiplier="1.5"
+        android:layout_marginBottom="40dp" />
+
+    <!-- Current Time -->
+    <TextView
+        android:id="@+id/bedtimeCurrentTime"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="10:30 PM"
+        android:textSize="32sp"
+        android:textColor="#ffd700"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="56dp" />
+
+    <!-- Spacer to push button to bottom -->
+    <Space
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <!-- Emergency Call Button -->
+    <Button
+        android:id="@+id/emergencyCallButton"
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:text="📞 EMERGENCY CALL"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#ffffff"
+        android:backgroundTint="#d32f2f"
+        android:stateListAnimator="@null"
+        android:elevation="8dp"
+        android:layout_marginBottom="32dp" />
+
+    <!-- Information Text -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="⚠️ Only emergency calls are allowed in Bedtime Mode\n\nYour device will resume normal operation in the morning."
+        android:textSize="12sp"
+        android:textColor="#b0bec5"
+        android:gravity="center"
+        android:lineSpacingMultiplier="1.5"
+        android:layout_marginTop="16dp" />
+
+    <!-- Footer -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Good Night 🛌"
+        android:textSize="14sp"
+        android:textColor="#90caf9"
+        android:textStyle="italic"
+        android:gravity="center"
+        android:layout_marginTop="24dp" />
+
+</LinearLayout>

@@ -89,6 +89,10 @@ object SafeZoneChecker {
         val allSafeZones = mutableListOf<SafeZone>()
 
         try {
+            Log.d(TAG, "========================================")
+            Log.d(TAG, "Getting safe zones for child: $childUid")
+            Log.d(TAG, "========================================")
+
             // Get all parents from child's parents subcollection
             val parentsSnapshot = db.collection("users")
                 .document(childUid)
@@ -96,22 +100,44 @@ object SafeZoneChecker {
                 .get()
                 .await()
 
-            Log.d(TAG, "Found ${parentsSnapshot.size()} parent(s) for child")
+            Log.d(TAG, "📋 Query: /users/$childUid/parents")
+            Log.d(TAG, "📊 Found ${parentsSnapshot.size()} parent document(s)")
+
+            if (parentsSnapshot.isEmpty) {
+                Log.w(TAG, "⚠️ WARNING: No parents found in child's 'parents' subcollection!")
+                Log.w(TAG, "⚠️ Check if parent-child relationship is properly set up in Firestore")
+            }
 
             // For each parent, get their safe zones that apply to this child
             for (parentDoc in parentsSnapshot.documents) {
                 val parentId = parentDoc.getString("parentId")
-                if (parentId != null) {
+                Log.d(TAG, "----------------------------------------")
+                Log.d(TAG, "Processing parent document: ${parentDoc.id}")
+                Log.d(TAG, "Parent ID field value: $parentId")
+                Log.d(TAG, "All fields in parent doc: ${parentDoc.data}")
+
+                if (parentId == null) {
+                    Log.e(TAG, "❌ Parent document ${parentDoc.id} has NULL 'parentId' field!")
+                    continue
+                }
+
+                try {
                     val parentSafeZones = getSafeZonesForParent(parentId, childUid)
                     allSafeZones.addAll(parentSafeZones)
-                    Log.d(TAG, "Parent ${parentId.take(10)}... has ${parentSafeZones.size} safe zone(s) applicable to this child")
+                    Log.d(TAG, "✓ Parent $parentId has ${parentSafeZones.size} safe zone(s) applicable to this child")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error getting safe zones for parent $parentId", e)
+                    e.printStackTrace()
                 }
             }
 
-            Log.d(TAG, "Total applicable safe zones collected: ${allSafeZones.size}")
+            Log.d(TAG, "========================================")
+            Log.d(TAG, "FINAL RESULT: ${allSafeZones.size} total applicable safe zones")
+            Log.d(TAG, "========================================")
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error getting safe zones for child", e)
+            Log.e(TAG, "❌ CRITICAL ERROR in getAllSafeZonesForChild", e)
+            e.printStackTrace()
         }
 
         return allSafeZones
@@ -126,20 +152,35 @@ object SafeZoneChecker {
         val safeZones = mutableListOf<SafeZone>()
 
         try {
+            Log.d(TAG, "  📋 Query: /users/$parentUid/safeZones")
+
             val zonesSnapshot = db.collection("users")
                 .document(parentUid)
                 .collection("safeZones")
                 .get()
                 .await()
 
-            Log.d(TAG, "Found ${zonesSnapshot.size()} total safe zone(s) for parent")
+            Log.d(TAG, "  📊 Found ${zonesSnapshot.size()} total safe zone document(s) for parent")
+
+            if (zonesSnapshot.isEmpty) {
+                Log.w(TAG, "  ⚠️ WARNING: Parent has NO safe zones in /users/$parentUid/safeZones")
+            }
 
             for (zoneDoc in zonesSnapshot.documents) {
                 try {
+                    Log.d(TAG, "  ──────────────────────────────────────")
+                    Log.d(TAG, "  Processing safe zone: ${zoneDoc.id}")
+                    Log.d(TAG, "  Zone name: ${zoneDoc.getString("name")}")
+                    Log.d(TAG, "  All fields: ${zoneDoc.data}")
+
                     // Get the children array from the safe zone
                     val childrenList = (zoneDoc.get("children") as? List<*>)?.mapNotNull {
                         it as? String
                     } ?: emptyList()
+
+                    Log.d(TAG, "  Children in this zone: $childrenList")
+                    Log.d(TAG, "  Looking for child: $childUid")
+                    Log.d(TAG, "  Contains child? ${childrenList.contains(childUid)}")
 
                     // Only include this safe zone if it applies to the current child
                     if (childrenList.contains(childUid)) {
@@ -156,16 +197,18 @@ object SafeZoneChecker {
                             children = childrenList
                         )
                         safeZones.add(zone)
-                        Log.d(TAG, "✓ Safe zone '${zone.name}' applies to child ${childUid.take(10)}...")
+                        Log.d(TAG, "  ✅ ADDED: Safe zone '${zone.name}' applies to child")
                     } else {
-                        Log.d(TAG, "✗ Safe zone '${zoneDoc.getString("name")}' does NOT apply to child ${childUid.take(10)}... (applies to ${childrenList.size} other child(ren))")
+                        Log.d(TAG, "  ❌ SKIPPED: Zone does NOT apply to this child")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error parsing safe zone: ${zoneDoc.id}", e)
+                    Log.e(TAG, "  ❌ Error parsing safe zone: ${zoneDoc.id}", e)
+                    e.printStackTrace()
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error getting safe zones for parent $parentUid", e)
+            Log.e(TAG, "  ❌ CRITICAL ERROR getting safe zones for parent $parentUid", e)
+            e.printStackTrace()
         }
 
         return safeZones

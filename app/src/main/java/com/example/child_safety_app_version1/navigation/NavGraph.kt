@@ -15,11 +15,20 @@ import com.example.child_safety_app_version1.userInterface.AddChildScreen
 import com.example.child_safety_app_version1.userInterface.EmergencyContactsScreen
 import com.example.child_safety_app_version1.userInterface.NotificationsScreen
 import com.example.child_safety_app_version1.utils.getSavedRole
+import com.example.child_safety_app_version1.screens.AppManagementScreen
+import com.example.child_safety_app_version1.screens.ModeControlScreen
+import com.example.child_safety_app_version1.userInterface.PaymentMonitoringScreen
+import com.example.child_safety_app_version1.viewModels.ModeControlViewModel
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.tasks.await
 
 @Composable
 fun NavGraph(shouldOpenNotifications: Boolean = false) {
     val navController = rememberNavController()
     val context = LocalContext.current
+    val auth = FirebaseAuth.getInstance()
+    val currentUser = auth.currentUser
 
     // Defensively get the saved role
     val savedRole = remember { getSavedRole(context) ?: "" }
@@ -50,23 +59,43 @@ fun NavGraph(shouldOpenNotifications: Boolean = false) {
         composable("login") {
             LoginScreen(navController = navController)
         }
+
         composable("parent_dashboard") {
             ParentDashboard(navController = navController)
         }
+
         composable("child_dashboard") {
             ChildDashboard(navController = navController)
         }
+
         composable("safe_zone") {
             EnhancedMapScreen(navController = navController)
         }
+
         composable("add_child") {
             AddChildScreen(navController = navController)
         }
+
         composable("notifications") {
             NotificationsScreen(navController)
         }
+
         composable("emergency_contacts") {
             EmergencyContactsScreen(navController = navController)
+        }
+
+        // ⭐ FIXED: App Management Route with Child Selection
+        composable("app_management") {
+            AppManagementScreen()
+        }
+
+        // ⭐ FIXED: Mode Control Route with Child Selection
+        composable("mode_control") {
+            ModeControlScreen()
+        }
+
+        composable("payment_monitoring") {
+            PaymentMonitoringScreen(navController = navController)
         }
     }
 

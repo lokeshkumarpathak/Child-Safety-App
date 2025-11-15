@@ -2,33 +2,65 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools" >
 
-    <!-- REQUIRED PERMISSIONS FOR LOCATION SEARCH AND MAPPING -->
-
-    <!-- Location permissions for GPS functionality -->
+    <!-- ============ LOCATION PERMISSIONS ============ -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
-    <!-- Internet access for location search API calls -->
+    <!-- ============ INTERNET & NETWORK PERMISSIONS ============ -->
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- Network state for checking connectivity -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- OSMDroid map caching -->
+    <!-- ============ STORAGE PERMISSIONS ============ -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    <!-- Wake lock for location services -->
+    <!-- ============ SERVICE & WAKE LOCK PERMISSIONS ============ -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- ============ PHONE & SMS PERMISSIONS ============ -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_PRECISE_PHONE_STATE"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+
+    <!-- ============ APP USAGE & BLOCKING PERMISSIONS ============ -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.GET_TASKS" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+
+    <!-- ============ PACKAGE VISIBILITY (Android 11+) ============ -->
+    <!-- ============ PACKAGE VISIBILITY (Android 11+) ============ -->
+    <queries>
+        <!-- Query all apps that can handle MAIN intent (launchable apps) -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+
+        <!-- Query all apps that can be launched -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -41,17 +73,30 @@
         android:theme="@style/Theme.Child_Safety_App_Version1"
         android:usesCleartextTraffic="true">
 
+        <!-- ============ MAIN ACTIVITY ============ -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.Child_Safety_App_Version1">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Deep link for SMS location links -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="childsafety"
+                    android:host="location" />
+            </intent-filter>
         </activity>
 
+        <!-- ============ FIREBASE MESSAGING SERVICE ============ -->
         <service
             android:name=".services.MyFirebaseMessagingService"
             android:exported="false">
@@ -59,13 +104,82 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        <!-- Location Monitoring Service -->
+
+        <!-- ============ LOCATION MONITORING SERVICE ============ -->
         <service
             android:name=".services.LocationMonitoringService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- ============ APP BLOCKING SERVICES ============ -->
+        <!-- Main comprehensive blocking service (300ms monitoring) -->
+        <service
+            android:name=".services.ComprehensiveAppBlockingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- ============ ACCESSIBILITY SERVICE (Optional - For Enhanced Blocking) ============ -->
+        <service
+            android:name=".services.AppBlockingAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ============ BROADCAST RECEIVERS ============ -->
+        <!-- Screen state receiver for bedtime mode -->
+        <receiver
+            android:name=".receivers.ScreenStateReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SCREEN_ON" />
+                <action android:name="android.intent.action.SCREEN_OFF" />
+                <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Package launch blocker receiver -->
+        <receiver
+            android:name=".receivers.PackageLaunchBlockerReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_INSTALL" />
+                <action android:name="android.intent.action.PACKAGE_FIRST_LAUNCH" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Boot completion receiver to restart blocking service -->
+        <receiver
+            android:name=".receivers.BootCompletionReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".services.SmsReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ============ FIREBASE METADATA ============ -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@drawable/ic_notification" />

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Place this file in: res/drawable/bedtime_gradient_background.xml -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:type="linear"
+        android:angle="135"
+        android:startColor="#0d1b2a"
+        android:centerColor="#1b263b"
+        android:endColor="#415a77"
+        android:gradientRadius="1000" />
+</shape>

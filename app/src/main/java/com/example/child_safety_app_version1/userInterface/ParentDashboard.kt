@@ -137,6 +137,27 @@ fun ParentDashboard(navController: NavController) {
             )
 
             DashboardButton(
+                icon = Icons.Default.Apps,
+                title = "App Management",
+                description = "View usage & control apps",
+                onClick = { navController.navigate("app_management") }
+            )
+
+            DashboardButton(
+                icon = Icons.Default.School,
+                title = "Study & Bedtime Mode",
+                description = "Control device access modes",
+                onClick = { navController.navigate("mode_control") }
+            )
+
+            DashboardButton(
+                icon = Icons.Default.CreditCard,
+                title = "Payment Monitoring",
+                description = "Monitor child's payment transactions",
+                onClick = { navController.navigate("payment_monitoring") }
+            )
+
+            DashboardButton(
                 icon = Icons.Default.ChildCare,
                 title = "Manage Children",
                 description = "Add or remove children from your account",

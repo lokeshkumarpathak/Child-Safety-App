@@ -201,7 +201,7 @@ fun NotificationsScreen(navController: NavController) {
                             read = doc.getBoolean("read") ?: false,
                             childUid = doc.getString("childUid") ?: ""
                         ).also {
-                            Log.d("NotificationsScreen", "      ✅ Created: ${it.title} (${formatTimestamp(it.timestamp)})")
+                            Log.d("NotificationsScreen", "      ✅ Created: ${it.title} (${formatTimestamp1(it.timestamp)})")
                             Log.d("NotificationsScreen", "         Type: ${it.type}")
                             Log.d("NotificationsScreen", "         Location: ${it.latitude}, ${it.longitude}")
                             Log.d("NotificationsScreen", "         Read: ${it.read}")
@@ -535,7 +535,7 @@ fun AnimatedNotificationCard(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = formatTimestamp(notification.timestamp),
+                                text = formatTimestamp1(notification.timestamp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = contentColor.copy(alpha = 0.7f)
                             )
@@ -683,7 +683,7 @@ fun DynamicLocationMapDialog(
                     val marker = Marker(map).apply {
                         position = GeoPoint(lat, lon)
                         title = "📍 Child's Current Location"
-                        snippet = "Last updated: ${formatTimestamp(notification.timestamp)}"
+                        snippet = "Last updated: ${formatTimestamp1(notification.timestamp)}"
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                     }
 
@@ -777,7 +777,7 @@ fun DynamicLocationMapDialog(
                                         val marker = Marker(this).apply {
                                             position = GeoPoint(lat, lon)
                                             title = "📍 Child's Current Location"
-                                            snippet = "Last updated: ${formatTimestamp(notification.timestamp)}"
+                                            snippet = "Last updated: ${formatTimestamp1(notification.timestamp)}"
                                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                                         }
                                         overlays.add(marker)
@@ -852,7 +852,7 @@ fun DynamicLocationMapDialog(
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = "Updated ${formatTimestamp(notification.timestamp)}",
+                                            text = "Updated ${formatTimestamp1(notification.timestamp)}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -977,7 +977,7 @@ private fun clearAllNotifications(parentUid: String) {
     }
 }
 
-private fun formatTimestamp(timestamp: Long): String {
+private fun formatTimestamp1(timestamp: Long): String {
     val now = System.currentTimeMillis()
     val diff = now - timestamp
 

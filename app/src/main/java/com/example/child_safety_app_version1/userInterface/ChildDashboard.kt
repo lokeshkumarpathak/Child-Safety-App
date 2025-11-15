@@ -1,6 +1,8 @@
 package com.example.child_safety_app_version1.userInterface
 
+import androidx.compose.foundation.border
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Geocoder
@@ -8,10 +10,14 @@ import android.location.LocationManager
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import android.os.PowerManager
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,18 +25,26 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
+import com.example.child_safety_app_version1.data.AppMode
+import com.example.child_safety_app_version1.managers.AppModeManager
+import com.example.child_safety_app_version1.managers.UsageDataCollector
 import com.example.child_safety_app_version1.services.LocationMonitoringService
 import com.example.child_safety_app_version1.utils.FcmNotificationSender
 import com.example.child_safety_app_version1.utils.FcmTokenManager
 import com.example.child_safety_app_version1.utils.NotificationType
+import com.example.child_safety_app_version1.utils.PermissionHelper
+import com.example.child_safety_app_version1.utils.UsageStatsHelper
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
@@ -40,11 +54,20 @@ fun ChildDashboard(navController: NavController) {
     val context = LocalContext.current
     val auth = FirebaseAuth.getInstance()
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var showBatteryOptDialog by remember { mutableStateOf(false) }
+    var needsBatteryExemption by remember { mutableStateOf(false) }
+
     var isLoggingOut by remember { mutableStateOf(false) }
     var isSendingEmergency by remember { mutableStateOf(false) }
     var isLocationServiceRunning by remember { mutableStateOf(false) }
     var isLocationEnabled by remember { mutableStateOf(false) }
     var showLocationDisabledDialog by remember { mutableStateOf(false) }
+
+    // ⭐ Mode state from AppModeManager
+    val currentMode by AppModeManager.currentMode.collectAsState()
+    var isCollectingUsageData by remember { mutableStateOf(false) }
+    var missingPermissions by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     // Location tracking states
     var currentLocationName by remember { mutableStateOf("Fetching location...") }
@@ -54,6 +77,74 @@ fun ChildDashboard(navController: NavController) {
     var lastUpdateTime by remember { mutableStateOf("Never") }
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+
+    // ⭐ NEW: Initialize AppModeManager when dashboard is created
+    LaunchedEffect(Unit) {
+        AppModeManager.initialize(context)
+    }
+
+    // ⭐ NEW: Check permissions on lifecycle resume (fixes permission card not disappearing)
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                // Refresh permission status when returning from settings
+                val missing = mutableSetOf<String>()
+
+                if (!PermissionHelper.hasUsageStatsPermission(context)) {
+                    missing.add("Usage Stats")
+                }
+
+                if (!PermissionHelper.hasAccessibilityPermission(context)) {
+                    missing.add("Accessibility Service")
+                }
+
+                if (!PermissionHelper.hasOverlayPermission(context)) {
+                    missing.add("Overlay Permission")
+                }
+
+                missingPermissions = missing
+            }
+        }
+
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // Check for missing permissions on initial launch
+    LaunchedEffect(Unit) {
+        val missing = mutableSetOf<String>()
+
+        if (!PermissionHelper.hasUsageStatsPermission(context)) {
+            missing.add("Usage Stats")
+        }
+
+        if (!PermissionHelper.hasAccessibilityPermission(context)) {
+            missing.add("Accessibility Service")
+        }
+
+        if (!PermissionHelper.hasOverlayPermission(context)) {
+            missing.add("Overlay Permission")
+        }
+
+        missingPermissions = missing
+    }
+
+    // Check battery optimization on launch
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val packageName = context.packageName
+            needsBatteryExemption = !powerManager.isIgnoringBatteryOptimizations(packageName)
+
+            if (needsBatteryExemption) {
+                delay(2000) // Wait 2 seconds before showing
+                showBatteryOptDialog = true
+            }
+        }
+    }
 
     // Check if device location is enabled
     fun checkLocationEnabled(): Boolean {
@@ -87,7 +178,6 @@ fun ChildDashboard(navController: NavController) {
                     currentLatitude = location.latitude
                     currentLongitude = location.longitude
 
-                    // Get location name using Geocoder
                     try {
                         val geocoder = Geocoder(context, Locale.getDefault())
                         val addresses = geocoder.getFromLocation(location.latitude, location.longitude, 1)
@@ -133,7 +223,6 @@ fun ChildDashboard(navController: NavController) {
     ) { isGranted ->
         if (isGranted) {
             Toast.makeText(context, "Background location access granted!", Toast.LENGTH_SHORT).show()
-            // Now start the service
             if (checkLocationEnabled()) {
                 startLocationMonitoringService(context)
                 isLocationServiceRunning = true
@@ -160,11 +249,9 @@ fun ChildDashboard(navController: NavController) {
         if (fineLocationGranted || coarseLocationGranted) {
             Toast.makeText(context, "Location permission granted", Toast.LENGTH_SHORT).show()
 
-            // Immediately request background location (Android 10+)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
             } else {
-                // For Android 9 and below, just start the service
                 if (checkLocationEnabled()) {
                     startLocationMonitoringService(context)
                     isLocationServiceRunning = true
@@ -190,13 +277,12 @@ fun ChildDashboard(navController: NavController) {
                 isLocationServiceRunning = false
                 currentLocationName = "Device location is turned OFF"
             }
-            kotlinx.coroutines.delay(3000) // Check every 3 seconds
+            kotlinx.coroutines.delay(3000)
         }
     }
 
     // Request permissions on launch
     LaunchedEffect(Unit) {
-        // First check if location is enabled
         if (!checkLocationEnabled()) {
             isLocationEnabled = false
             showLocationDisabledDialog = true
@@ -214,7 +300,6 @@ fun ChildDashboard(navController: NavController) {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (fineLocationGranted || coarseLocationGranted) {
-            // Check background permission
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val backgroundGranted = ContextCompat.checkSelfPermission(
                     context,
@@ -234,7 +319,6 @@ fun ChildDashboard(navController: NavController) {
                 fetchCurrentLocation()
             }
         } else {
-            // Request location permissions
             locationPermissionLauncher.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -358,7 +442,6 @@ fun ChildDashboard(navController: NavController) {
                         if (checkLocationEnabled()) {
                             showLocationDisabledDialog = false
                             isLocationEnabled = true
-                            // Retry permission request
                             locationPermissionLauncher.launch(
                                 arrayOf(
                                     Manifest.permission.ACCESS_FINE_LOCATION,
@@ -380,6 +463,83 @@ fun ChildDashboard(navController: NavController) {
         )
     }
 
+    // Battery optimization dialog
+    if (showBatteryOptDialog) {
+        AlertDialog(
+            onDismissRequest = { /* Cannot dismiss */ },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Warning, // or BatteryAlert if available
+                    contentDescription = null,
+                    tint = Color(0xFFFF9800),
+                    modifier = Modifier.size(48.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Battery Optimization Required",
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "To prevent Android from killing the safety service, this app needs to be exempted from battery optimization.",
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "⚠️ Without this, the app will stop working after a few minutes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                            intent.data = Uri.parse("package:${context.packageName}")
+                            context.startActivity(intent)
+                        }
+                        showBatteryOptDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFFF9800)
+                    )
+                ) {
+                    Icon(Icons.Default.Settings, null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Grant Permission")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        // Check again
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                            needsBatteryExemption = !powerManager.isIgnoringBatteryOptimizations(context.packageName)
+                            showBatteryOptDialog = needsBatteryExemption
+
+                            if (!needsBatteryExemption) {
+                                Toast.makeText(context, "✅ Battery optimization disabled!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "⚠️ Please disable battery optimization", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text("Check Again")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -389,6 +549,82 @@ fun ChildDashboard(navController: NavController) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Spacer(modifier = Modifier.height(8.dp))
+
+        // ⭐ Mode Indicator Card - Dynamic based on current mode (NOW UPDATES AUTOMATICALLY)
+        ModeIndicatorCard(
+            currentMode = currentMode,
+            isCollectingData = isCollectingUsageData
+        )
+
+        // Battery optimization warning
+        if (needsBatteryExemption) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+                border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFF9800))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(28.dp),
+                            tint = Color(0xFFFF9800)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "⚠️ Service May Stop",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFE65100)
+                            )
+                            Text(
+                                text = "Battery optimization is enabled",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFEF6C00)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                intent.data = Uri.parse("package:${context.packageName}")
+                                context.startActivity(intent)
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.End),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Fix Now")
+                    }
+                }
+            }
+        }
+
+        // Missing Permissions Card (NOW DISAPPEARS WHEN ALL PERMISSIONS GRANTED)
+        if (missingPermissions.isNotEmpty()) {
+            MissingPermissionsCard(
+                missingPermissions = missingPermissions,
+                onGrantPermissions = {
+                    when {
+                        !PermissionHelper.hasUsageStatsPermission(context) -> {
+                            PermissionHelper.requestUsageStatsPermission(context)
+                        }
+                        !PermissionHelper.hasAccessibilityPermission(context) -> {
+                            PermissionHelper.requestAccessibilityPermission(context)
+                        }
+                        !PermissionHelper.hasOverlayPermission(context) -> {
+                            PermissionHelper.requestOverlayPermission(context)
+                        }
+                    }
+                }
+            )
+        }
 
         // Status Card
         Card(
@@ -407,9 +643,9 @@ fun ChildDashboard(navController: NavController) {
             ) {
                 Text(
                     text = when {
-                        !isLocationEnabled -> "⚠ Device Location is OFF"
-                        isLocationServiceRunning -> "✓ Safety Monitoring Active"
-                        else -> "⚠ Safety Monitoring Inactive"
+                        !isLocationEnabled -> "⚠️ Device Location is OFF"
+                        isLocationServiceRunning -> "✅ Safety Monitoring Active"
+                        else -> "⚠️ Safety Monitoring Inactive"
                     },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
@@ -548,7 +784,6 @@ fun ChildDashboard(navController: NavController) {
             Text("Emergency Contact Numbers")
         }
 
-        // Restart monitoring button
         if (!isLocationServiceRunning && isLocationEnabled) {
             OutlinedButton(
                 onClick = {
@@ -567,7 +802,6 @@ fun ChildDashboard(navController: NavController) {
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Info text
         Text(
             text = "Your parents will be notified if you leave the safe zone",
             style = MaterialTheme.typography.bodySmall,
@@ -600,6 +834,175 @@ fun ChildDashboard(navController: NavController) {
         }
 
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun ModeIndicatorCard(
+    currentMode: AppMode,
+    isCollectingData: Boolean
+) {
+    val backgroundColor = when (currentMode) {
+        AppMode.NORMAL -> Color(0xFFC8E6C9)
+        AppMode.STUDY -> Color(0xFFFFF3E0)
+        AppMode.BEDTIME -> Color(0xFFF3E5F5)
+    }
+
+    val borderColor = when (currentMode) {
+        AppMode.NORMAL -> Color(0xFF2E7D32)
+        AppMode.STUDY -> Color(0xFFE65100)
+        AppMode.BEDTIME -> Color(0xFF512DA8)
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(2.dp, borderColor, RoundedCornerShape(12.dp)),
+        colors = CardDefaults.cardColors(containerColor = backgroundColor)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = currentMode.icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = borderColor
+                )
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Current Mode: ${currentMode.displayName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = borderColor
+                    )
+                    Text(
+                        text = currentMode.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Black.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            // ⭐ Mode-specific additional info
+            when (currentMode) {
+                AppMode.STUDY -> {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = borderColor.copy(alpha = 0.3f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "📚 Only educational apps are accessible",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = borderColor,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                AppMode.BEDTIME -> {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = borderColor.copy(alpha = 0.3f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "🌙 Only emergency calls and this app are available",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = borderColor,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                AppMode.NORMAL -> {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = borderColor.copy(alpha = 0.3f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "✅ Standard device usage with parental controls",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = borderColor,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            if (isCollectingData) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = borderColor
+                    )
+                    Text(
+                        text = "📊 Collecting usage data...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = borderColor,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MissingPermissionsCard(
+    missingPermissions: Set<String>,
+    onGrantPermissions: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFCDD2)),
+        border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFD32F2F))
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = Color(0xFFD32F2F)
+                )
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Missing Permissions",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFD32F2F)
+                    )
+                    Text(
+                        text = missingPermissions.joinToString(", "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF7F1814)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onGrantPermissions,
+                modifier = Modifier
+                    .align(Alignment.End)
+                    .height(36.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFD32F2F)
+                )
+            ) {
+                Text("Grant Permissions", style = MaterialTheme.typography.labelSmall)
+            }
+        }
     }
 }
 

@@ -2,6 +2,7 @@ package com.example.child_safety_app_version1.utils
 
 import android.content.Context
 import android.util.Log
+import com.example.child_safety_app_version1.data.PaymentTransaction
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
@@ -24,7 +25,8 @@ object FcmNotificationSender {
         childUid: String,
         notificationType: NotificationType,
         latitude: Double? = null,
-        longitude: Double? = null
+        longitude: Double? = null,
+        requestId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "════════════════════════════════════════")
@@ -34,6 +36,9 @@ object FcmNotificationSender {
             Log.d(TAG, "   Child UID: ${childUid.take(10)}... (full: $childUid)")
             Log.d(TAG, "   Notification Type: ${notificationType.name}")
             Log.d(TAG, "   Location: $latitude, $longitude")
+            if (requestId != null) {
+                Log.d(TAG, "   Request ID: $requestId")
+            }
             Log.d(TAG, "════════════════════════════════════════")
 
             // Step 1: Get OAuth2 access token
@@ -138,7 +143,8 @@ object FcmNotificationSender {
                             body = notificationType.getBody(childName),
                             latitude = latitude,
                             longitude = longitude,
-                            notificationType = notificationType.name
+                            notificationType = notificationType.name,
+                            requestId = requestId
                         )
                     } catch (e: Exception) {
                         Log.e(TAG, "   ❌ EXCEPTION sending message", e)
@@ -183,6 +189,470 @@ object FcmNotificationSender {
             e.printStackTrace()
             Log.e(TAG, "════════════════════════════════════════")
             return@withContext false
+        }
+    }
+
+    /**
+     * NEW: Send usage data request to child device via FCM
+     */
+    suspend fun sendUsageDataRequestToChild(
+        context: Context,
+        childUid: String,
+        requestId: String,
+        parentUid: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "📊 SENDING USAGE DATA REQUEST TO CHILD")
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "   Child UID: ${childUid.take(10)}...")
+            Log.d(TAG, "   Request ID: $requestId")
+            Log.d(TAG, "   Parent UID: ${parentUid.take(10)}...")
+
+            // Step 1: Get access token
+            val accessToken = try {
+                OAuth2TokenManager.getAccessToken(context)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to get access token", e)
+                return@withContext false
+            }
+
+            if (accessToken == null) {
+                Log.e(TAG, "❌ Access token is NULL")
+                return@withContext false
+            }
+
+            // Step 2: Get child's FCM token
+            Log.d(TAG, "   🔍 Fetching child's FCM token...")
+            val childFcmToken = try {
+                getChildFcmToken(childUid)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error fetching child FCM token", e)
+                return@withContext false
+            }
+
+            if (childFcmToken == null) {
+                Log.e(TAG, "❌ Child has no FCM token available")
+                Log.e(TAG, "   Child may not have opened app yet")
+                return@withContext false
+            }
+
+            Log.d(TAG, "   ✅ Child FCM token: ${childFcmToken.take(30)}...")
+
+            // Step 3: Send message to child
+            Log.d(TAG, "   📤 Sending message to child...")
+            val success = try {
+                sendFcmMessageToChild(
+                    accessToken = accessToken,
+                    fcmToken = childFcmToken,
+                    childUid = childUid,
+                    parentUid = parentUid,
+                    requestId = requestId,
+                    notificationType = NotificationType.USAGE_DATA_REQUEST
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Exception sending message", e)
+                e.printStackTrace()
+                false
+            }
+
+            if (success) {
+                Log.d(TAG, "   ✅ Usage data request sent successfully")
+            } else {
+                Log.e(TAG, "   ❌ Failed to send usage data request")
+            }
+
+            Log.d(TAG, "════════════════════════════════════════")
+            return@withContext success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ CRITICAL ERROR in sendUsageDataRequestToChild", e)
+            e.printStackTrace()
+            return@withContext false
+        }
+    }
+
+    /**
+     * NEW: Send all apps request to child device via FCM
+     */
+    suspend fun sendAllAppsRequestToChild(
+        context: Context,
+        childUid: String,
+        requestId: String,
+        parentUid: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "📱 SENDING ALL APPS REQUEST TO CHILD")
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "   Child UID: ${childUid.take(10)}...")
+            Log.d(TAG, "   Request ID: $requestId")
+            Log.d(TAG, "   Parent UID: ${parentUid.take(10)}...")
+
+            // Step 1: Get access token
+            val accessToken = try {
+                OAuth2TokenManager.getAccessToken(context)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to get access token", e)
+                return@withContext false
+            }
+
+            if (accessToken == null) {
+                Log.e(TAG, "❌ Access token is NULL")
+                return@withContext false
+            }
+
+            // Step 2: Get child's FCM token
+            Log.d(TAG, "   🔍 Fetching child's FCM token...")
+            val childFcmToken = try {
+                getChildFcmToken(childUid)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error fetching child FCM token", e)
+                return@withContext false
+            }
+
+            if (childFcmToken == null) {
+                Log.e(TAG, "❌ Child has no FCM token available")
+                Log.e(TAG, "   Child may not have opened app yet")
+                return@withContext false
+            }
+
+            Log.d(TAG, "   ✅ Child FCM token: ${childFcmToken.take(30)}...")
+
+            // Step 3: Send message to child
+            Log.d(TAG, "   📤 Sending all apps request message to child...")
+            val success = try {
+                sendFcmMessageToChild(
+                    accessToken = accessToken,
+                    fcmToken = childFcmToken,
+                    childUid = childUid,
+                    parentUid = parentUid,
+                    requestId = requestId,
+                    notificationType = NotificationType.ALL_APPS_REQUEST
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Exception sending message", e)
+                e.printStackTrace()
+                false
+            }
+
+            if (success) {
+                Log.d(TAG, "   ✅ All apps request sent successfully")
+            } else {
+                Log.e(TAG, "   ❌ Failed to send all apps request")
+            }
+
+            Log.d(TAG, "════════════════════════════════════════")
+            return@withContext success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ CRITICAL ERROR in sendAllAppsRequestToChild", e)
+            e.printStackTrace()
+            return@withContext false
+        }
+    }
+
+    /**
+     * NEW: Send mode activation notification to child
+     */
+    suspend fun sendModeActivationNotification(
+        context: Context,
+        childUid: String,
+        newMode: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "🔄 SENDING MODE ACTIVATION NOTIFICATION")
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "   Child UID: ${childUid.take(10)}...")
+            Log.d(TAG, "   New Mode: $newMode")
+
+            // Step 1: Get access token
+            val accessToken = try {
+                OAuth2TokenManager.getAccessToken(context)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to get access token", e)
+                return@withContext false
+            }
+
+            if (accessToken == null) {
+                Log.e(TAG, "❌ Access token is NULL")
+                return@withContext false
+            }
+
+            // Step 2: Get child's FCM token
+            Log.d(TAG, "   🔍 Fetching child's FCM token...")
+            val childFcmToken = try {
+                getChildFcmToken(childUid)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error fetching child FCM token", e)
+                return@withContext false
+            }
+
+            if (childFcmToken == null) {
+                Log.e(TAG, "❌ Child has no FCM token available")
+                return@withContext false
+            }
+
+            Log.d(TAG, "   ✅ Child FCM token: ${childFcmToken.take(30)}...")
+
+            // Step 3: Send mode activation message
+            Log.d(TAG, "   📤 Sending mode activation message...")
+            val success = try {
+                sendFcmMessageToChild(
+                    accessToken = accessToken,
+                    fcmToken = childFcmToken,
+                    childUid = childUid,
+                    parentUid = "", // Not applicable for mode notifications
+                    requestId = null,
+                    notificationType = NotificationType.MODE_ACTIVATED,
+                    modeInfo = newMode
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Exception sending message", e)
+                e.printStackTrace()
+                false
+            }
+
+            if (success) {
+                Log.d(TAG, "   ✅ Mode activation notification sent successfully")
+            } else {
+                Log.e(TAG, "   ❌ Failed to send mode activation notification")
+            }
+
+            Log.d(TAG, "════════════════════════════════════════")
+            return@withContext success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ CRITICAL ERROR in sendModeActivationNotification", e)
+            e.printStackTrace()
+            return@withContext false
+        }
+    }
+
+    /**
+     * NEW: Get child's FCM token from Firestore
+     */
+    private suspend fun getChildFcmToken(childUid: String): String? {
+        return try {
+            val db = FirebaseFirestore.getInstance()
+            val snapshot = db.collection("users")
+                .document(childUid)
+                .collection("fcmTokens")
+                .limit(1)
+                .get()
+                .await()
+
+            if (snapshot.isEmpty) {
+                Log.w(TAG, "⚠️ No FCM tokens found for child")
+                return null
+            }
+
+            val token = snapshot.documents.firstOrNull()?.getString("token")
+            if (token.isNullOrEmpty()) {
+                Log.w(TAG, "⚠️ FCM token is empty or null")
+                return null
+            }
+
+            token
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error getting child FCM token", e)
+            null
+        }
+    }
+
+    /**
+     * NEW: Send FCM message directly to child device
+     */
+    /**
+     * ENHANCED VERSION with detailed debugging
+     * Replace your existing sendFcmMessageToChild() with this version
+     */
+    private suspend fun sendFcmMessageToChild(
+        accessToken: String,
+        fcmToken: String,
+        childUid: String,
+        parentUid: String,
+        requestId: String?,
+        notificationType: NotificationType,
+        modeInfo: String? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+
+        try {
+            Log.d(TAG, "      ════════════════════════════════════════")
+            Log.d(TAG, "      🌐 DETAILED FCM REQUEST DEBUG")
+            Log.d(TAG, "      ════════════════════════════════════════")
+            Log.d(TAG, "      📋 Request Details:")
+            Log.d(TAG, "         Endpoint: $FCM_ENDPOINT")
+            Log.d(TAG, "         FCM Token: ${fcmToken.take(50)}...")
+            Log.d(TAG, "         Access Token: ${accessToken.take(50)}...")
+            Log.d(TAG, "         Child UID: ${childUid.take(15)}...")
+            Log.d(TAG, "         Parent UID: ${parentUid.take(15)}...")
+            Log.d(TAG, "         Request ID: $requestId")
+            Log.d(TAG, "         Notification Type: ${notificationType.name}")
+
+            val url = URL(FCM_ENDPOINT)
+            connection = url.openConnection() as HttpURLConnection
+
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
+            connection.setRequestProperty("Content-Type", "application/json; UTF-8")
+            connection.doOutput = true
+            connection.connectTimeout = 30000
+            connection.readTimeout = 30000
+
+            Log.d(TAG, "      ")
+            Log.d(TAG, "      📦 Building JSON payload...")
+
+            // Build JSON payload
+            val message = JSONObject().apply {
+                put("message", JSONObject().apply {
+                    put("token", fcmToken)
+                    put("notification", JSONObject().apply {
+                        put("title", notificationType.getTitle(""))
+                        put("body", notificationType.getBody(""))
+                    })
+                    put("data", JSONObject().apply {
+                        put("notificationType", notificationType.name)
+                        put("parentUid", parentUid)
+                        put("childUid", childUid)
+                        if (requestId != null) {
+                            put("requestId", requestId)
+                        }
+                        if (modeInfo != null) {
+                            put("modeInfo", modeInfo)
+                        }
+                    })
+                    put("android", JSONObject().apply {
+                        put("priority", "HIGH")
+                        put("notification", JSONObject().apply {
+                            put("sound", "default")
+                            put("channel_id", "child_safety_alerts")
+                        })
+                    })
+                })
+            }
+
+            Log.d(TAG, "      ✅ JSON payload built successfully")
+            Log.d(TAG, "      ")
+            Log.d(TAG, "      📄 Full Payload:")
+            Log.d(TAG, message.toString(2).prependIndent("         "))
+            Log.d(TAG, "      ")
+
+            // Send request
+            Log.d(TAG, "      📤 Sending HTTP POST request...")
+            val writer = OutputStreamWriter(connection.outputStream)
+            writer.write(message.toString())
+            writer.flush()
+            writer.close()
+            Log.d(TAG, "      ✅ Request sent, waiting for response...")
+
+            // Check response
+            val responseCode = connection.responseCode
+            Log.d(TAG, "      ")
+            Log.d(TAG, "      📨 HTTP RESPONSE:")
+            Log.d(TAG, "         Response Code: $responseCode")
+            Log.d(TAG, "         Response Message: ${connection.responseMessage}")
+
+            val success = responseCode == HttpURLConnection.HTTP_OK
+
+            if (success) {
+                // Success - read response body
+                val responseBody = try {
+                    connection.inputStream?.bufferedReader()?.readText()
+                } catch (e: Exception) {
+                    Log.w(TAG, "         ⚠️ Could not read response body", e)
+                    "(unable to read)"
+                }
+
+                Log.d(TAG, "      ")
+                Log.d(TAG, "      ✅ FCM SUCCESS - Message Sent!")
+                Log.d(TAG, "      📄 Response Body:")
+                Log.d(TAG, responseBody?.prependIndent("         ") ?: "         (empty)")
+                Log.d(TAG, "      ════════════════════════════════════════")
+
+            } else {
+                // Error - read error stream
+                val errorBody = try {
+                    connection.errorStream?.bufferedReader()?.readText()
+                } catch (e: Exception) {
+                    Log.e(TAG, "         ⚠️ Could not read error stream", e)
+                    "(unable to read error)"
+                }
+
+                Log.e(TAG, "      ")
+                Log.e(TAG, "      ❌ FCM FAILED - Message Not Sent")
+                Log.e(TAG, "      📄 Error Response Body:")
+                Log.e(TAG, errorBody?.prependIndent("         ") ?: "         (empty)")
+                Log.e(TAG, "      ")
+                Log.e(TAG, "      🔍 TROUBLESHOOTING:")
+
+                when (responseCode) {
+                    400 -> {
+                        Log.e(TAG, "         400 BAD REQUEST - Common causes:")
+                        Log.e(TAG, "         - Invalid JSON payload structure")
+                        Log.e(TAG, "         - Missing required fields")
+                        Log.e(TAG, "         - Invalid FCM token format")
+                        Log.e(TAG, "         - Check the error body above for details")
+                    }
+                    401 -> {
+                        Log.e(TAG, "         401 UNAUTHORIZED - Common causes:")
+                        Log.e(TAG, "         - Access token is invalid or expired")
+                        Log.e(TAG, "         - Service account JSON is incorrect")
+                        Log.e(TAG, "         - Token not generated correctly")
+                        Log.e(TAG, "         - Access token preview: ${accessToken.take(30)}...")
+                    }
+                    403 -> {
+                        Log.e(TAG, "         403 FORBIDDEN - Common causes:")
+                        Log.e(TAG, "         - FCM API not enabled in Firebase project")
+                        Log.e(TAG, "         - Wrong Firebase project ID")
+                        Log.e(TAG, "         - Project ID: $PROJECT_ID")
+                        Log.e(TAG, "         - Service account lacks FCM permissions")
+                    }
+                    404 -> {
+                        Log.e(TAG, "         404 NOT FOUND - Common causes:")
+                        Log.e(TAG, "         - Invalid FCM token (user uninstalled app)")
+                        Log.e(TAG, "         - Token is old/expired")
+                        Log.e(TAG, "         - Wrong endpoint URL")
+                        Log.e(TAG, "         - Token: ${fcmToken.take(50)}...")
+                    }
+                    429 -> {
+                        Log.e(TAG, "         429 TOO MANY REQUESTS - Common causes:")
+                        Log.e(TAG, "         - Rate limit exceeded")
+                        Log.e(TAG, "         - Too many messages sent too quickly")
+                        Log.e(TAG, "         - Wait a few minutes and try again")
+                    }
+                    500, 502, 503, 504 -> {
+                        Log.e(TAG, "         ${responseCode} SERVER ERROR - Common causes:")
+                        Log.e(TAG, "         - Firebase/Google servers are down")
+                        Log.e(TAG, "         - Temporary service issue")
+                        Log.e(TAG, "         - Retry the request")
+                    }
+                    else -> {
+                        Log.e(TAG, "         UNKNOWN ERROR CODE: $responseCode")
+                        Log.e(TAG, "         Check Firebase Console for more details")
+                    }
+                }
+
+                Log.e(TAG, "      ════════════════════════════════════════")
+            }
+
+            return@withContext success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "      ════════════════════════════════════════")
+            Log.e(TAG, "      ❌ EXCEPTION IN sendFcmMessageToChild")
+            Log.e(TAG, "      ════════════════════════════════════════")
+            Log.e(TAG, "      Exception Type: ${e.javaClass.simpleName}")
+            Log.e(TAG, "      Exception Message: ${e.message}")
+            Log.e(TAG, "      ")
+            Log.e(TAG, "      Stack Trace:")
+            e.printStackTrace()
+            Log.e(TAG, "      ════════════════════════════════════════")
+            return@withContext false
+        } finally {
+            connection?.disconnect()
         }
     }
 
@@ -333,7 +803,7 @@ object FcmNotificationSender {
     }
 
     /**
-     * Sends a single FCM message using HTTP v1 API
+     * Sends a single FCM message using HTTP v1 API to parent
      */
     private suspend fun sendFcmMessage(
         accessToken: String,
@@ -345,7 +815,8 @@ object FcmNotificationSender {
         body: String,
         latitude: Double?,
         longitude: Double?,
-        notificationType: String
+        notificationType: String,
+        requestId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
 
@@ -376,7 +847,10 @@ object FcmNotificationSender {
                         put("notificationType", notificationType)
                         put("parentUid", parentUid)
                         put("childUid", childUid)
-                        put("childName", childName) // Include child name in data payload
+                        put("childName", childName)
+                        if (requestId != null) {
+                            put("requestId", requestId)
+                        }
                         if (latitude != null && longitude != null) {
                             put("latitude", latitude.toString())
                             put("longitude", longitude.toString())
@@ -438,6 +912,180 @@ object FcmNotificationSender {
             connection?.disconnect()
         }
     }
+
+    /**
+     * Send payment notification to parents
+     */
+    suspend fun sendPaymentNotificationToParents(
+        context: Context,
+        childUid: String,
+        transaction: PaymentTransaction,
+        notificationType: NotificationType
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "💳 SENDING PAYMENT NOTIFICATION TO PARENTS")
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "   Child UID: ${childUid.take(10)}...")
+            Log.d(TAG, "   Transaction Amount: ₹${transaction.amount}")
+            Log.d(TAG, "   Merchant: ${transaction.merchant}")
+            Log.d(TAG, "   Type: ${notificationType.name}")
+
+            // Get access token
+            val accessToken = try {
+                OAuth2TokenManager.getAccessToken(context)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to get access token", e)
+                return@withContext false
+            }
+
+            if (accessToken == null) {
+                Log.e(TAG, "❌ Access token is NULL")
+                return@withContext false
+            }
+
+            // Get parent FCM tokens and child names
+            val parentData = try {
+                getParentFcmTokensAndChildNames(childUid)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Exception fetching parent data", e)
+                emptyMap()
+            }
+
+            if (parentData.isEmpty()) {
+                Log.e(TAG, "❌ No parent data found")
+                return@withContext false
+            }
+
+            Log.d(TAG, "   Total parents found: ${parentData.size}")
+
+            var successCount = 0
+            var failureCount = 0
+
+            for ((parentUid, data) in parentData) {
+                val childName = data.childName
+                Log.d(TAG, "   📤 Sending to parent: ${parentUid.take(10)}... (Child: $childName)")
+
+                for (token in data.tokens) {
+                    val success = try {
+                        sendPaymentFcmMessage(
+                            accessToken = accessToken,
+                            fcmToken = token,
+                            parentUid = parentUid,
+                            childUid = childUid,
+                            childName = childName,
+                            transaction = transaction,
+                            notificationType = notificationType
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "   ❌ Exception sending message", e)
+                        false
+                    }
+
+                    if (success) {
+                        successCount++
+                        Log.d(TAG, "   ✅ SUCCESS")
+                    } else {
+                        failureCount++
+                        Log.e(TAG, "   ❌ FAILED")
+                    }
+                }
+            }
+
+            Log.d(TAG, "")
+            Log.d(TAG, "📊 RESULTS: ✅ $successCount successful, ❌ $failureCount failed")
+            Log.d(TAG, "════════════════════════════════════════")
+
+            return@withContext successCount > 0
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ CRITICAL ERROR in sendPaymentNotificationToParents", e)
+            e.printStackTrace()
+            return@withContext false
+        }
+    }
+
+    /**
+     * Send FCM payment message to parent
+     */
+    private suspend fun sendPaymentFcmMessage(
+        accessToken: String,
+        fcmToken: String,
+        parentUid: String,
+        childUid: String,
+        childName: String,
+        transaction: PaymentTransaction,
+        notificationType: NotificationType
+    ): Boolean = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+
+        try {
+            val url = URL(FCM_ENDPOINT)
+            connection = url.openConnection() as HttpURLConnection
+
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
+            connection.setRequestProperty("Content-Type", "application/json; UTF-8")
+            connection.doOutput = true
+            connection.connectTimeout = 30000
+            connection.readTimeout = 30000
+
+            val title = notificationType.getTitle(childName)
+            val body = "${notificationType.getBody(childName)}\n₹${transaction.amount} at ${transaction.merchant}"
+
+            // Build JSON payload
+            val message = JSONObject().apply {
+                put("message", JSONObject().apply {
+                    put("token", fcmToken)
+                    put("notification", JSONObject().apply {
+                        put("title", title)
+                        put("body", body)
+                    })
+                    put("data", JSONObject().apply {
+                        put("notificationType", notificationType.name)
+                        put("parentUid", parentUid)
+                        put("childUid", childUid)
+                        put("childName", childName)
+                        put("transactionId", transaction.id)
+                        put("amount", transaction.amount.toString())
+                        put("merchant", transaction.merchant)
+                        put("transactionType", transaction.transactionType.name)
+                        put("timestamp", transaction.timestamp.toString())
+                    })
+                    put("android", JSONObject().apply {
+                        put("priority", "HIGH")
+                        put("notification", JSONObject().apply {
+                            put("sound", "default")
+                            put("channel_id", "child_safety_alerts")
+                        })
+                    })
+                })
+            }
+
+            // Send request
+            val writer = OutputStreamWriter(connection.outputStream)
+            writer.write(message.toString())
+            writer.flush()
+            writer.close()
+
+            // Check response
+            val responseCode = connection.responseCode
+            val success = responseCode == HttpURLConnection.HTTP_OK
+
+            if (!success) {
+                val errorBody = connection.errorStream?.bufferedReader()?.readText()
+                Log.e(TAG, "      ❌ FCM Error Response: $errorBody")
+            }
+
+            return@withContext success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "      ❌ Exception in sendPaymentFcmMessage", e)
+            return@withContext false
+        } finally {
+            connection?.disconnect()
+        }
+    }
 }
 
 /**
@@ -459,8 +1107,31 @@ enum class NotificationType {
     EMERGENCY {
         override fun getTitle(childName: String) = "🚨 $childName - EMERGENCY ALERT"
         override fun getBody(childName: String) = "$childName has triggered an emergency alert!"
+    },
+    USAGE_DATA_REQUEST {
+        override fun getTitle(childName: String) = "📊 Usage Data Request"
+        override fun getBody(childName: String) = "Collecting app usage data..."
+    },
+    ALL_APPS_REQUEST {
+        override fun getTitle(childName: String) = "📱 Apps List Request"
+        override fun getBody(childName: String) = "Collecting installed apps list..."
+    },
+    MODE_ACTIVATED {
+        override fun getTitle(childName: String) = "📚 Mode Changed"
+        override fun getBody(childName: String) = "Device mode has been updated"
+    },
+    // Add these to your existing NotificationType enum in FcmNotificationSender.kt
+
+    PAYMENT_THRESHOLD_EXCEEDED {
+        override fun getTitle(childName: String) = "💳 $childName - Payment Alert"
+        override fun getBody(childName: String) = "$childName made a payment exceeding the set threshold"
+    },
+    PAYMENT_TRANSACTION {
+        override fun getTitle(childName: String) = "💰 $childName - Payment Made"
+        override fun getBody(childName: String) = "$childName made a payment transaction"
     };
 
     abstract fun getTitle(childName: String): String
     abstract fun getBody(childName: String): String
 }
+
