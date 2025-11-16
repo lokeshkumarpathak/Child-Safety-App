@@ -1,5 +1,6 @@
 package com.example.child_safety_app_version1.userInterface
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.example.child_safety_app_version1.utils.saveLoginState
 import com.example.child_safety_app_version1.utils.FcmTokenManager
+import com.example.child_safety_app_version1.utils.SupabaseUserSyncManager // ✅ ADD THIS
 import com.google.firebase.auth.*
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
@@ -143,6 +145,19 @@ fun LoginScreen(navController: NavController) {
                     .set(userMap)
                     .addOnSuccessListener {
                         scope.launch {
+                            // ✅ NEW: Sync user to Supabase after Firebase registration
+                            Log.d("LoginScreen", "🔄 Syncing new user to Supabase...")
+                            val syncSuccess = SupabaseUserSyncManager.syncCurrentUserToSupabase(
+                                context = context,
+                                role = role
+                            )
+
+                            if (syncSuccess) {
+                                Log.d("LoginScreen", "✅ User synced to Supabase successfully")
+                            } else {
+                                Log.w("LoginScreen", "⚠️ Failed to sync user to Supabase (non-critical)")
+                            }
+
                             isLoading = false
 
                             // Sign out the user immediately after registration
@@ -205,6 +220,19 @@ fun LoginScreen(navController: NavController) {
                         scope.launch {
                             val storedRole = doc.getString("role")
                             if (storedRole == role) {
+                                // ✅ NEW: Sync user to Supabase on login (in case they weren't synced before)
+                                Log.d("LoginScreen", "🔄 Syncing user to Supabase on login...")
+                                val syncSuccess = SupabaseUserSyncManager.syncCurrentUserToSupabase(
+                                    context = context,
+                                    role = role
+                                )
+
+                                if (syncSuccess) {
+                                    Log.d("LoginScreen", "✅ User synced to Supabase successfully")
+                                } else {
+                                    Log.w("LoginScreen", "⚠️ Failed to sync user to Supabase (non-critical)")
+                                }
+
                                 // Save FCM token after successful login
                                 FcmTokenManager.saveFcmToken(uid)
 

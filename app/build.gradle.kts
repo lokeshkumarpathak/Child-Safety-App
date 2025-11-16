@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     id("com.google.gms.google-services")
+    id("com.google.devtools.ksp") // ✅ Updated KSP version
 }
 
 android {
@@ -61,6 +62,11 @@ android {
     }
 }
 
+// ✅ Move KSP configuration outside android block
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     // Core Android
     implementation(libs.androidx.core.ktx)
@@ -85,6 +91,15 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 
+    // Room Database
+    val roomVersion = "2.6.1"
+    implementation("androidx.room:room-runtime:$roomVersion")
+    implementation("androidx.room:room-ktx:$roomVersion")
+    ksp("androidx.room:room-compiler:$roomVersion")
+
+    // WorkManager (for background database downloads)
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
     // OSMDroid
     implementation("org.osmdroid:osmdroid-android:6.1.18")
 
@@ -98,17 +113,13 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.0.1")
     implementation("com.google.android.gms:play-services-maps:18.2.0")
 
-    // ✅ Firebase (Client-Side Only)
+    // Firebase (Client-Side Only)
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-analytics-ktx")
     implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-firestore-ktx")
     implementation("com.google.firebase:firebase-messaging-ktx")
     implementation("com.google.firebase:firebase-storage-ktx")
-
-    // ⚡ Removed (Server-side libraries — no longer needed)
-    // implementation("com.google.auth:google-auth-library-oauth2-http:1.23.0")
-    // implementation("com.google.firebase:firebase-admin:9.3.0")
 
     implementation("com.google.auth:google-auth-library-oauth2-http:1.19.0")
 
@@ -137,4 +148,13 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
+    // 🆕 NO SUPABASE SDK NEEDED - Using HTTP API instead!
+    // This means no dependency conflicts and simpler setup
+
+    // 🆕 OkHttp for HTTP requests (you likely already have this)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // 🆕 JSON parsing
+    implementation("com.google.code.gson:gson:2.10.1")
 }

@@ -14,6 +14,7 @@ import com.example.child_safety_app_version1.userInterface.EnhancedMapScreen
 import com.example.child_safety_app_version1.userInterface.AddChildScreen
 import com.example.child_safety_app_version1.userInterface.EmergencyContactsScreen
 import com.example.child_safety_app_version1.userInterface.NotificationsScreen
+import com.example.child_safety_app_version1.userInterface.ChildMediaViewer
 import com.example.child_safety_app_version1.utils.getSavedRole
 import com.example.child_safety_app_version1.screens.AppManagementScreen
 import com.example.child_safety_app_version1.screens.ModeControlScreen
@@ -82,6 +83,17 @@ fun NavGraph(shouldOpenNotifications: Boolean = false) {
 
         composable("emergency_contacts") {
             EmergencyContactsScreen(navController = navController)
+        }
+
+        // 🆕 MEDIA VIEWER ROUTE - Pass child info from navigation arguments
+        composable("media_viewer/{childUid}/{childName}") { backStackEntry ->
+            val childUid = backStackEntry.arguments?.getString("childUid") ?: ""
+            val childName = backStackEntry.arguments?.getString("childName") ?: "Child"
+
+            ChildMediaViewer(
+                childUid = childUid,
+                childName = childName
+            )
         }
 
         // ⭐ FIXED: App Management Route with Child Selection

@@ -26,7 +26,9 @@ object FcmNotificationSender {
         notificationType: NotificationType,
         latitude: Double? = null,
         longitude: Double? = null,
-        requestId: String? = null
+        requestId: String? = null,
+        accuracy: Float? = null,
+        locationMethod: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "════════════════════════════════════════")
@@ -144,7 +146,7 @@ object FcmNotificationSender {
                             latitude = latitude,
                             longitude = longitude,
                             notificationType = notificationType.name,
-                            requestId = requestId
+                            requestId = requestId,
                         )
                     } catch (e: Exception) {
                         Log.e(TAG, "   ❌ EXCEPTION sending message", e)
@@ -433,30 +435,56 @@ object FcmNotificationSender {
     /**
      * NEW: Get child's FCM token from Firestore
      */
+    /**
+     * FIXED VERSION: Get child's LATEST FCM token from Firestore
+     * Sorts by updatedAt timestamp to get the most recent token
+     */
     private suspend fun getChildFcmToken(childUid: String): String? {
         return try {
             val db = FirebaseFirestore.getInstance()
+
+            Log.d(TAG, "         🔍 Querying FCM tokens for child...")
+            Log.d(TAG, "            Child UID: ${childUid.take(15)}...")
+
             val snapshot = db.collection("users")
                 .document(childUid)
                 .collection("fcmTokens")
+                .orderBy("updatedAt", com.google.firebase.firestore.Query.Direction.DESCENDING)  // 👈 GET LATEST FIRST!
                 .limit(1)
                 .get()
                 .await()
 
             if (snapshot.isEmpty) {
-                Log.w(TAG, "⚠️ No FCM tokens found for child")
+                Log.w(TAG, "         ⚠️ No FCM tokens found for child")
                 return null
             }
 
-            val token = snapshot.documents.firstOrNull()?.getString("token")
+            val tokenDoc = snapshot.documents.firstOrNull()
+            val token = tokenDoc?.getString("token")
+            val updatedAt = tokenDoc?.getTimestamp("updatedAt")
+
             if (token.isNullOrEmpty()) {
-                Log.w(TAG, "⚠️ FCM token is empty or null")
+                Log.w(TAG, "         ⚠️ FCM token is empty or null")
                 return null
+            }
+
+            Log.d(TAG, "         ✅ Latest FCM token retrieved:")
+            Log.d(TAG, "            Token length: ${token.length} characters")
+            Log.d(TAG, "            Token preview: ${token.take(50)}...${token.takeLast(10)}")
+            Log.d(TAG, "            Updated at: $updatedAt")
+            Log.d(TAG, "            Document ID: ${tokenDoc.id}")
+
+            // Validate token length (FCM tokens are typically 152-180 characters)
+            if (token.length < 140) {
+                Log.w(TAG, "         ⚠️ WARNING: Token seems too short (${token.length} chars)")
+                Log.w(TAG, "            Expected: 150-180 characters")
+                Log.w(TAG, "            This token might be invalid")
             }
 
             token
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error getting child FCM token", e)
+            Log.e(TAG, "         ❌ Error getting child FCM token", e)
+            e.printStackTrace()
             null
         }
     }
@@ -485,7 +513,8 @@ object FcmNotificationSender {
             Log.d(TAG, "      ════════════════════════════════════════")
             Log.d(TAG, "      📋 Request Details:")
             Log.d(TAG, "         Endpoint: $FCM_ENDPOINT")
-            Log.d(TAG, "         FCM Token: ${fcmToken.take(50)}...")
+            Log.d(TAG, "         FCM Token LENGTH: ${fcmToken.length} chars")  // 👈 CHECK THIS!
+            Log.d(TAG, "         FCM Token: $fcmToken")  // 👈 LOG FULL TOKEN
             Log.d(TAG, "         Access Token: ${accessToken.take(50)}...")
             Log.d(TAG, "         Child UID: ${childUid.take(15)}...")
             Log.d(TAG, "         Parent UID: ${parentUid.take(15)}...")
@@ -548,8 +577,14 @@ object FcmNotificationSender {
             writer.close()
             Log.d(TAG, "      ✅ Request sent, waiting for response...")
 
-            // Check response
-            val responseCode = connection.responseCode
+            // 👇 THIS IS THE CRITICAL PART - Make sure this executes!
+            val responseCode = try {
+                connection.responseCode
+            } catch (e: Exception) {
+                Log.e(TAG, "      ❌ EXCEPTION getting response code!", e)
+                return@withContext false
+            }
+
             Log.d(TAG, "      ")
             Log.d(TAG, "      📨 HTTP RESPONSE:")
             Log.d(TAG, "         Response Code: $responseCode")
@@ -560,7 +595,7 @@ object FcmNotificationSender {
             if (success) {
                 // Success - read response body
                 val responseBody = try {
-                    connection.inputStream?.bufferedReader()?.readText()
+                    connection.inputStream?.bufferedReader()?.use { it.readText() }
                 } catch (e: Exception) {
                     Log.w(TAG, "         ⚠️ Could not read response body", e)
                     "(unable to read)"
@@ -575,7 +610,7 @@ object FcmNotificationSender {
             } else {
                 // Error - read error stream
                 val errorBody = try {
-                    connection.errorStream?.bufferedReader()?.readText()
+                    connection.errorStream?.bufferedReader()?.use { it.readText() }
                 } catch (e: Exception) {
                     Log.e(TAG, "         ⚠️ Could not read error stream", e)
                     "(unable to read error)"
@@ -594,44 +629,34 @@ object FcmNotificationSender {
                         Log.e(TAG, "         - Invalid JSON payload structure")
                         Log.e(TAG, "         - Missing required fields")
                         Log.e(TAG, "         - Invalid FCM token format")
-                        Log.e(TAG, "         - Check the error body above for details")
+                        Log.e(TAG, "         - CHECK: Token length = ${fcmToken.length}")
                     }
                     401 -> {
-                        Log.e(TAG, "         401 UNAUTHORIZED - Common causes:")
+                        Log.e(TAG, "         401 UNAUTHORIZED")
                         Log.e(TAG, "         - Access token is invalid or expired")
-                        Log.e(TAG, "         - Service account JSON is incorrect")
-                        Log.e(TAG, "         - Token not generated correctly")
-                        Log.e(TAG, "         - Access token preview: ${accessToken.take(30)}...")
+                        Log.e(TAG, "         - Token preview: ${accessToken.take(30)}...")
                     }
                     403 -> {
-                        Log.e(TAG, "         403 FORBIDDEN - Common causes:")
-                        Log.e(TAG, "         - FCM API not enabled in Firebase project")
-                        Log.e(TAG, "         - Wrong Firebase project ID")
+                        Log.e(TAG, "         403 FORBIDDEN")
+                        Log.e(TAG, "         - FCM API not enabled in Firebase")
                         Log.e(TAG, "         - Project ID: $PROJECT_ID")
-                        Log.e(TAG, "         - Service account lacks FCM permissions")
                     }
                     404 -> {
-                        Log.e(TAG, "         404 NOT FOUND - Common causes:")
-                        Log.e(TAG, "         - Invalid FCM token (user uninstalled app)")
-                        Log.e(TAG, "         - Token is old/expired")
-                        Log.e(TAG, "         - Wrong endpoint URL")
-                        Log.e(TAG, "         - Token: ${fcmToken.take(50)}...")
+                        Log.e(TAG, "         404 NOT FOUND - MOST LIKELY ISSUE")
+                        Log.e(TAG, "         - FCM token is INVALID or EXPIRED")
+                        Log.e(TAG, "         - Token length: ${fcmToken.length} (should be ~150-180)")
+                        Log.e(TAG, "         - Child may have:")
+                        Log.e(TAG, "           • Uninstalled and reinstalled app")
+                        Log.e(TAG, "           • Cleared app data")
+                        Log.e(TAG, "           • Token not saved completely")
+                        Log.e(TAG, "         - SOLUTION: Child needs to open app to regenerate token")
                     }
                     429 -> {
-                        Log.e(TAG, "         429 TOO MANY REQUESTS - Common causes:")
+                        Log.e(TAG, "         429 TOO MANY REQUESTS")
                         Log.e(TAG, "         - Rate limit exceeded")
-                        Log.e(TAG, "         - Too many messages sent too quickly")
-                        Log.e(TAG, "         - Wait a few minutes and try again")
-                    }
-                    500, 502, 503, 504 -> {
-                        Log.e(TAG, "         ${responseCode} SERVER ERROR - Common causes:")
-                        Log.e(TAG, "         - Firebase/Google servers are down")
-                        Log.e(TAG, "         - Temporary service issue")
-                        Log.e(TAG, "         - Retry the request")
                     }
                     else -> {
                         Log.e(TAG, "         UNKNOWN ERROR CODE: $responseCode")
-                        Log.e(TAG, "         Check Firebase Console for more details")
                     }
                 }
 
@@ -672,7 +697,6 @@ object FcmNotificationSender {
         return try {
             val db = FirebaseFirestore.getInstance()
 
-            // Query: /users/{childUid}/parents
             val parentsSnapshot = db.collection("users")
                 .document(childUid)
                 .collection("parents")
@@ -683,8 +707,6 @@ object FcmNotificationSender {
 
             if (parentsSnapshot.isEmpty) {
                 Log.e(TAG, "      ❌ No parent documents found")
-                Log.e(TAG, "         Check Firebase Console:")
-                Log.e(TAG, "         /users/$childUid/parents")
                 return emptyMap()
             }
 
@@ -707,15 +729,16 @@ object FcmNotificationSender {
                     Log.d(TAG, "         Parent Email: $parentEmail")
 
                     // Get child name from parent's children subcollection
-                    Log.d(TAG, "         🔍 Fetching child name from parent's children subcollection...")
+                    Log.d(TAG, "         🔍 Fetching child name...")
                     val childName = getChildNameFromParent(parentId, childUid)
                     Log.d(TAG, "         👶 Child Name: $childName")
 
-                    // Query: /users/{parentId}/fcmTokens
-                    Log.d(TAG, "         🔍 Querying FCM tokens...")
+                    // 👇 FIXED: Query for LATEST tokens ordered by updatedAt
+                    Log.d(TAG, "         🔍 Querying FCM tokens (latest first)...")
                     val tokensSnapshot = db.collection("users")
                         .document(parentId)
                         .collection("fcmTokens")
+                        .orderBy("updatedAt", com.google.firebase.firestore.Query.Direction.DESCENDING)  // 👈 LATEST FIRST!
                         .get()
                         .await()
 
@@ -723,16 +746,26 @@ object FcmNotificationSender {
 
                     if (tokensSnapshot.isEmpty) {
                         Log.w(TAG, "         ⚠️ No FCM tokens found for this parent")
-                        Log.w(TAG, "            Parent needs to open app to generate token")
                         return@forEachIndexed
                     }
 
                     val tokens = mutableListOf<String>()
+
+                    // Get all tokens, but they're already sorted by latest first
                     tokensSnapshot.documents.forEachIndexed { tokenIndex, tokenDoc ->
                         val token = tokenDoc.getString("token")
+                        val updatedAt = tokenDoc.getTimestamp("updatedAt")
+
                         if (!token.isNullOrEmpty()) {
                             tokens.add(token)
-                            Log.d(TAG, "         ✅ Token ${tokenIndex + 1}: ${token.take(30)}...")
+                            Log.d(TAG, "         ✅ Token ${tokenIndex + 1}:")
+                            Log.d(TAG, "            Preview: ${token.take(30)}...${token.takeLast(10)}")
+                            Log.d(TAG, "            Length: ${token.length} chars")
+                            Log.d(TAG, "            Updated: $updatedAt")
+
+                            if (token.length < 140) {
+                                Log.w(TAG, "            ⚠️ Warning: Token seems too short")
+                            }
                         } else {
                             Log.w(TAG, "         ⚠️ Token ${tokenIndex + 1}: Empty or null")
                         }
@@ -740,7 +773,8 @@ object FcmNotificationSender {
 
                     if (tokens.isNotEmpty()) {
                         parentDataMap[parentId] = ParentData(tokens, childName)
-                        Log.d(TAG, "         ✅ Added ${tokens.size} valid token(s) with child name: $childName")
+                        Log.d(TAG, "         ✅ Added ${tokens.size} valid token(s)")
+                        Log.d(TAG, "            Using latest token from: ${tokensSnapshot.documents.firstOrNull()?.getTimestamp("updatedAt")}")
                     } else {
                         Log.w(TAG, "         ⚠️ No valid tokens extracted")
                     }
@@ -761,6 +795,7 @@ object FcmNotificationSender {
             emptyMap()
         }
     }
+
 
     /**
      * Gets the child's name from parent's children subcollection

@@ -31,30 +31,68 @@ fun ParentDashboard(navController: NavController) {
     val scope = rememberCoroutineScope()
     var isLoggingOut by remember { mutableStateOf(false) }
 
+    // 🆕 SMS permission launcher (for receiving location SMS from child)
+    val smsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val sendGranted = permissions[Manifest.permission.SEND_SMS] ?: false
+        val readGranted = permissions[Manifest.permission.READ_SMS] ?: false
+        val receiveGranted = permissions[Manifest.permission.RECEIVE_SMS] ?: false
+
+        if (readGranted && receiveGranted) {
+            Toast.makeText(
+                context,
+                "✅ SMS permissions granted - You'll receive offline location alerts",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            Toast.makeText(
+                context,
+                "⚠️ SMS permissions needed to receive location alerts when child is offline",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     // Notification permission launcher for Android 13+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Toast.makeText(context, "Notification permission granted", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "✅ Notification permission granted", Toast.LENGTH_SHORT).show()
+
+            // After notification permission, request SMS permissions
+            requestSmsPermissionsIfNeeded(context, smsPermissionLauncher)
         } else {
-            Toast.makeText(context, "Notification permission denied. You won't receive alerts.", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                context,
+                "⚠️ Notification permission denied. You won't receive alerts.",
+                Toast.LENGTH_LONG
+            ).show()
+
+            // Still try to request SMS even if notification denied
+            requestSmsPermissionsIfNeeded(context, smsPermissionLauncher)
         }
     }
 
-    // Request notification permission on first composition
+    // Request permissions on first composition
     LaunchedEffect(Unit) {
+        // 1. Request notification permission first (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val permission = Manifest.permission.POST_NOTIFICATIONS
+            val notificationPermission = Manifest.permission.POST_NOTIFICATIONS
             when {
-                ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED -> {
-                    // Permission already granted
+                ContextCompat.checkSelfPermission(context, notificationPermission) == PackageManager.PERMISSION_GRANTED -> {
+                    // Notification permission already granted, check SMS
+                    requestSmsPermissionsIfNeeded(context, smsPermissionLauncher)
                 }
                 else -> {
-                    // Request permission
-                    notificationPermissionLauncher.launch(permission)
+                    // Request notification permission first
+                    notificationPermissionLauncher.launch(notificationPermission)
                 }
             }
+        } else {
+            // For Android < 13, just request SMS permissions
+            requestSmsPermissionsIfNeeded(context, smsPermissionLauncher)
         }
     }
 
@@ -204,6 +242,40 @@ fun ParentDashboard(navController: NavController) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 🆕 Helper function to request SMS permissions if not already granted
+ */
+private fun requestSmsPermissionsIfNeeded(
+    context: android.content.Context,
+    launcher: androidx.activity.compose.ManagedActivityResultLauncher<Array<String>, Map<String, Boolean>>
+) {
+    val sendSmsGranted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.SEND_SMS
+    ) == PackageManager.PERMISSION_GRANTED
+
+    val readSmsGranted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.READ_SMS
+    ) == PackageManager.PERMISSION_GRANTED
+
+    val receiveSmsGranted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.RECEIVE_SMS
+    ) == PackageManager.PERMISSION_GRANTED
+
+    // If any SMS permission is missing, request all of them
+    if (!sendSmsGranted || !readSmsGranted || !receiveSmsGranted) {
+        launcher.launch(
+            arrayOf(
+                Manifest.permission.SEND_SMS,
+                Manifest.permission.READ_SMS,
+                Manifest.permission.RECEIVE_SMS
+            )
+        )
     }
 }
 

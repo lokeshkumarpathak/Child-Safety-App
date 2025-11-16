@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.widget.Toast
 import android.os.PowerManager
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -37,11 +38,13 @@ import com.example.child_safety_app_version1.data.AppMode
 import com.example.child_safety_app_version1.managers.AppModeManager
 import com.example.child_safety_app_version1.managers.UsageDataCollector
 import com.example.child_safety_app_version1.services.LocationMonitoringService
+import com.example.child_safety_app_version1.utils.BackgroundSurvivalHelper
 import com.example.child_safety_app_version1.utils.FcmNotificationSender
 import com.example.child_safety_app_version1.utils.FcmTokenManager
 import com.example.child_safety_app_version1.utils.NotificationType
 import com.example.child_safety_app_version1.utils.PermissionHelper
 import com.example.child_safety_app_version1.utils.UsageStatsHelper
+import com.example.child_safety_app_version1.utils.sms.ParentPhoneCache
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.delay
@@ -63,6 +66,8 @@ fun ChildDashboard(navController: NavController) {
     var isLocationServiceRunning by remember { mutableStateOf(false) }
     var isLocationEnabled by remember { mutableStateOf(false) }
     var showLocationDisabledDialog by remember { mutableStateOf(false) }
+    // 🆕 Media permissions dialog
+    var showMediaPermissionsDialog by remember { mutableStateOf(false) }
 
     // ⭐ Mode state from AppModeManager
     val currentMode by AppModeManager.currentMode.collectAsState()
@@ -78,11 +83,47 @@ fun ChildDashboard(navController: NavController) {
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
+    // 🆕 MEDIA PERMISSION LAUNCHER
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
+        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        val audioSettingsGranted = permissions[Manifest.permission.MODIFY_AUDIO_SETTINGS] ?: false
+
+        Log.d("ChildDashboard", "📹 Media Permission Results:")
+        Log.d("ChildDashboard", "  Camera: $cameraGranted")
+        Log.d("ChildDashboard", "  Microphone: $micGranted")
+        Log.d("ChildDashboard", "  Audio Settings: $audioSettingsGranted")
+
+        if (cameraGranted && micGranted && audioSettingsGranted) {
+            Toast.makeText(context, "✅ Camera & Microphone permissions granted!", Toast.LENGTH_SHORT).show()
+
+            // Refresh permission status
+            val missing = mutableSetOf<String>()
+            if (!PermissionHelper.hasUsageStatsPermission(context)) missing.add("Usage Stats")
+            if (!PermissionHelper.hasAccessibilityPermission(context)) missing.add("Accessibility Service")
+            if (!PermissionHelper.hasOverlayPermission(context)) missing.add("Overlay Permission")
+            if (!PermissionHelper.hasCameraPermission(context)) missing.add("Camera")
+            if (!PermissionHelper.hasMicrophonePermission(context)) missing.add("Microphone")
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                missing.add("SMS")
+            }
+
+            missingPermissions = missing
+        } else {
+            // Some permissions were denied - show dialog to open settings
+            showMediaPermissionsDialog = true
+            Log.w("ChildDashboard", "⚠️ Some media permissions denied, showing settings dialog")
+        }
+    }
+
     // ⭐ NEW: Initialize AppModeManager when dashboard is created
     LaunchedEffect(Unit) {
         AppModeManager.initialize(context)
     }
 
+    // ⭐ NEW: Check permissions on lifecycle resume (fixes permission card not disappearing)
     // ⭐ NEW: Check permissions on lifecycle resume (fixes permission card not disappearing)
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -102,17 +143,40 @@ fun ChildDashboard(navController: NavController) {
                     missing.add("Overlay Permission")
                 }
 
+                // 🆕 Add SMS permission check
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
+                    missing.add("SMS")
+                }
+
+                // 🆕 Check battery optimization status
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    needsBatteryExemption = !powerManager.isIgnoringBatteryOptimizations(context.packageName)
+                }
+
+                // 🆕 Check Camera & Microphone
+                if (!PermissionHelper.hasCameraPermission(context)) {
+                    missing.add("Camera")
+                }
+
+                if (!PermissionHelper.hasMicrophonePermission(context)) {
+                    missing.add("Microphone")
+                }
+
                 missingPermissions = missing
             }
         }
 
         lifecycleOwner.lifecycle.addObserver(observer)
 
+        // 🔧 FIX: Must return onDispose block
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
+    // Check for missing permissions on initial launch
     // Check for missing permissions on initial launch
     LaunchedEffect(Unit) {
         val missing = mutableSetOf<String>()
@@ -127,6 +191,24 @@ fun ChildDashboard(navController: NavController) {
 
         if (!PermissionHelper.hasOverlayPermission(context)) {
             missing.add("Overlay Permission")
+        }
+
+        // 🆕 Check Camera & Microphone
+        if (!PermissionHelper.hasCameraPermission(context)) {
+            missing.add("Camera")
+        }
+
+        if (!PermissionHelper.hasMicrophonePermission(context)) {
+            missing.add("Microphone")
+        }
+
+        // Check SMS
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            missing.add("SMS")
+        }
+
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
+            missing.add("SMS")
         }
 
         missingPermissions = missing
@@ -239,6 +321,28 @@ fun ChildDashboard(navController: NavController) {
         }
     }
 
+    // 🆕 SMS permission launcher
+    val smsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val sendSmsGranted = permissions[Manifest.permission.SEND_SMS] ?: false
+        val readSmsGranted = permissions[Manifest.permission.READ_SMS] ?: false
+        val receiveSmsGranted = permissions[Manifest.permission.RECEIVE_SMS] ?: false
+
+        if (sendSmsGranted && readSmsGranted && receiveSmsGranted) {
+            Toast.makeText(context, "✅ SMS permissions granted", Toast.LENGTH_SHORT).show()
+
+            // Refresh permission check
+            val missing = mutableSetOf<String>()
+            if (!PermissionHelper.hasUsageStatsPermission(context)) missing.add("Usage Stats")
+            if (!PermissionHelper.hasAccessibilityPermission(context)) missing.add("Accessibility Service")
+            if (!PermissionHelper.hasOverlayPermission(context)) missing.add("Overlay Permission")
+            missingPermissions = missing
+        } else {
+            Toast.makeText(context, "⚠️ SMS permissions required for offline alerts", Toast.LENGTH_LONG).show()
+        }
+    }
+
     // Location permission launcher
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -334,6 +438,36 @@ fun ChildDashboard(navController: NavController) {
             while (true) {
                 kotlinx.coroutines.delay(30000)
                 fetchCurrentLocation()
+            }
+        }
+    }
+
+    // Update parent phone cache AFTER location service starts (ensures internet)
+    LaunchedEffect(isLocationServiceRunning) {
+        if (isLocationServiceRunning) {
+            delay(2000) // Wait 2 seconds for service to stabilize
+
+            val uid = FirebaseAuth.getInstance().currentUser?.uid
+            if (uid != null) {
+                scope.launch {
+                    try {
+                        Log.d("ChildDashboard", "Location service running - updating phone cache...")
+                        val success = ParentPhoneCache.updateCache(context, uid)
+
+                        if (success) {
+                            Log.d("ChildDashboard", "✅ Parent phone cache updated")
+                            Toast.makeText(
+                                context,
+                                "✅ Offline SMS alerts ready",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            Log.w("ChildDashboard", "⚠️ Failed to cache phone numbers")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ChildDashboard", "Error caching phone numbers", e)
+                    }
+                }
             }
         }
     }
@@ -540,6 +674,68 @@ fun ChildDashboard(navController: NavController) {
         )
     }
 
+    // 🆕 MEDIA PERMISSIONS DIALOG
+    if (showMediaPermissionsDialog) {
+        AlertDialog(
+            onDismissRequest = { showMediaPermissionsDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Videocam,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(48.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "Camera & Microphone Required",
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "To capture evidence when you leave the safe zone, the app needs camera and microphone access.",
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Please enable these permissions in app settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        // ✅ FIXED: Use openMediaPermissionsSettings instead of requestMediaPermissions
+                        PermissionHelper.openMediaPermissionsSettings(context)
+                        showMediaPermissionsDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Icon(Icons.Default.Settings, null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showMediaPermissionsDialog = false
+                    }
+                ) {
+                    Text("Not Now")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -554,6 +750,16 @@ fun ChildDashboard(navController: NavController) {
         ModeIndicatorCard(
             currentMode = currentMode,
             isCollectingData = isCollectingUsageData
+        )
+
+        // After ModeIndicatorCard
+        BackgroundSurvivalCard(
+            onFixNow = {
+                BackgroundSurvivalHelper.openBatteryOptimizationSettings(context)
+            },
+            onOpenManufacturerSettings = {
+                BackgroundSurvivalHelper.openManufacturerSettings(context)
+            }
         )
 
         // Battery optimization warning
@@ -612,6 +818,26 @@ fun ChildDashboard(navController: NavController) {
                 missingPermissions = missingPermissions,
                 onGrantPermissions = {
                     when {
+                        missingPermissions.contains("Camera") || missingPermissions.contains("Microphone") -> {
+                            Log.d("ChildDashboard", "Requesting camera & microphone permissions...")
+                            mediaPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.CAMERA,
+                                    Manifest.permission.RECORD_AUDIO,
+                                    Manifest.permission.MODIFY_AUDIO_SETTINGS
+                                )
+                            )
+                        }
+                        missingPermissions.contains("SMS") -> {
+                            Log.d("ChildDashboard", "Requesting SMS permissions...")
+                            smsPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.SEND_SMS,
+                                    Manifest.permission.READ_SMS,
+                                    Manifest.permission.RECEIVE_SMS
+                                )
+                            )
+                        }
                         !PermissionHelper.hasUsageStatsPermission(context) -> {
                             PermissionHelper.requestUsageStatsPermission(context)
                         }
@@ -1018,4 +1244,253 @@ private fun startLocationMonitoringService(context: android.content.Context) {
 private fun stopLocationMonitoringService(context: android.content.Context) {
     val intent = Intent(context, LocationMonitoringService::class.java)
     context.stopService(intent)
+}
+
+@Composable
+fun BackgroundSurvivalCard(
+    onFixNow: () -> Unit,
+    onOpenManufacturerSettings: () -> Unit
+) {
+    val context = LocalContext.current
+    var backgroundStatus by remember { mutableStateOf<BackgroundSurvivalHelper.BackgroundStatus?>(null) }
+    val manufacturer = BackgroundSurvivalHelper.getManufacturer()
+    val isAggressive = BackgroundSurvivalHelper.isAggressiveManufacturer()
+
+    // Check status on launch and periodically
+    LaunchedEffect(Unit) {
+        while (true) {
+            backgroundStatus = BackgroundSurvivalHelper.checkBackgroundStatus(context)
+            kotlinx.coroutines.delay(5000) // Check every 5 seconds
+        }
+    }
+
+    backgroundStatus?.let { status ->
+        if (!status.allRequirementsMet) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFFFEBEE)
+                ),
+                border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFD32F2F))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Header
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp),
+                            tint = Color(0xFFD32F2F)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "⚠️ Background Running Required",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFD32F2F)
+                            )
+                            Text(
+                                text = "App will stop working if not configured",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC62828)
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = Color(0xFFD32F2F).copy(alpha = 0.3f))
+
+                    // Device info
+                    Surface(
+                        color = Color(0xFFFFF3E0),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "📱 Your Device: $manufacturer",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (isAggressive) {
+                                Text(
+                                    text = "⚡ Aggressive battery optimization detected",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFFE65100)
+                                )
+                            }
+                        }
+                    }
+
+                    // Status checklist
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusCheckItem(
+                            label = "Battery Optimization",
+                            isOk = status.batteryOptimizationDisabled
+                        )
+                        StatusCheckItem(
+                            label = "Background Restrictions",
+                            isOk = status.backgroundRestrictionDisabled
+                        )
+                    }
+
+                    HorizontalDivider(color = Color(0xFFD32F2F).copy(alpha = 0.3f))
+
+                    // Manufacturer-specific instructions
+                    if (isAggressive) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "📋 Required Steps:",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFD32F2F)
+                            )
+                            BackgroundSurvivalHelper.getManufacturerInstructions().forEach { instruction ->
+                                Row(
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "•",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFFD32F2F)
+                                    )
+                                    Text(
+                                        text = instruction,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF5D4037)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+
+                    // Action buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Battery optimization button
+                        if (!status.batteryOptimizationDisabled) {
+                            Button(
+                                onClick = onFixNow,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFD32F2F)
+                                )
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Fix Battery",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Optimization",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+
+                        // Manufacturer settings button
+                        if (isAggressive) {
+                            Button(
+                                onClick = onOpenManufacturerSettings,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFE65100)
+                                )
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Open $manufacturer",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Settings",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Help text
+                    Surface(
+                        color = Color(0xFFFFF9C4),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = Color(0xFFFF6F00)
+                            )
+                            Text(
+                                text = "Without these settings, the app will stop monitoring after a few minutes!",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFE65100),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusCheckItem(
+    label: String,
+    isOk: Boolean
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            imageVector = if (isOk) Icons.Default.CheckCircle else Icons.Default.Close,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = if (isOk) Color(0xFF4CAF50) else Color(0xFFD32F2F)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (isOk) Color(0xFF2E7D32) else Color(0xFFD32F2F)
+        )
+        if (isOk) {
+            Text(
+                text = "✓ OK",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF4CAF50),
+                fontWeight = FontWeight.Bold
+            )
+        } else {
+            Text(
+                text = "✗ Required",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFD32F2F),
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
 }

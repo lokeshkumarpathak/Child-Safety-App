@@ -56,6 +56,7 @@ fun NotificationsScreen(navController: NavController) {
     var notifications by remember { mutableStateOf<List<SafetyNotification>>(emptyList()) }
     var selectedNotification by remember { mutableStateOf<SafetyNotification?>(null) }
     var showMapDialog by remember { mutableStateOf(false) }
+    var showMediaViewer by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var userRole by remember { mutableStateOf<String?>(null) }
@@ -110,8 +111,6 @@ fun NotificationsScreen(navController: NavController) {
             isLoading = false
             return@LaunchedEffect
         }
-
-        Log.d("NotificationsScreen", "✅ User is a parent - proceeding to load notifications")
 
         Log.d("NotificationsScreen", "✅ User is a parent - proceeding to load notifications")
 
@@ -290,6 +289,13 @@ fun NotificationsScreen(navController: NavController) {
                         showMapDialog = true
                         markNotificationAsRead(notification.id)
                     },
+                    onViewMedia = { notification ->
+                        Log.d("NotificationsScreen", "🎥 Navigating to media viewer for: ${notification.childUid.take(10)}...")
+                        navController.navigate("media_viewer/${notification.childUid}/Child") {
+                            launchSingleTop = true
+                        }
+                        markNotificationAsRead(notification.id)
+                    },
                     onDismiss = { notification ->
                         dismissNotification(notification.id)
                     }
@@ -396,6 +402,7 @@ fun EmptyState() {
 fun NotificationsList(
     notifications: List<SafetyNotification>,
     onViewLocation: (SafetyNotification) -> Unit,
+    onViewMedia: (SafetyNotification) -> Unit,
     onDismiss: (SafetyNotification) -> Unit
 ) {
     LazyColumn(
@@ -410,6 +417,7 @@ fun NotificationsList(
             AnimatedNotificationCard(
                 notification = notification,
                 onViewLocation = { onViewLocation(notification) },
+                onViewMedia = { onViewMedia(notification) },
                 onDismiss = { onDismiss(notification) }
             )
         }
@@ -421,6 +429,7 @@ fun NotificationsList(
 fun AnimatedNotificationCard(
     notification: SafetyNotification,
     onViewLocation: () -> Unit,
+    onViewMedia: () -> Unit,
     onDismiss: () -> Unit
 ) {
     // Pulsing animation for unread notifications
@@ -565,7 +574,51 @@ fun AnimatedNotificationCard(
                 color = contentColor
             )
 
-            // Location section
+            // 🆕 Action buttons row (Location + Media)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Location button (if has location)
+                if (notification.latitude != null && notification.longitude != null) {
+                    FilledTonalButton(
+                        onClick = onViewLocation,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Map,
+                            contentDescription = "View on map",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Map")
+                    }
+                }
+
+                // 🆕 Media button (always show for safe zone alerts)
+                if (notification.type == "OUTSIDE_SAFE_ZONE") {
+                    FilledTonalButton(
+                        onClick = onViewMedia,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Videocam,
+                            contentDescription = "View media",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Media")
+                    }
+                }
+            }
+
+            // Location section (if has location)
             if (notification.latitude != null && notification.longitude != null) {
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -578,7 +631,6 @@ fun AnimatedNotificationCard(
                     Column(modifier = Modifier.padding(12.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -606,19 +658,6 @@ fun AnimatedNotificationCard(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                                 )
-                            }
-
-                            FilledTonalButton(
-                                onClick = onViewLocation,
-                                modifier = Modifier.padding(start = 8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Map,
-                                    contentDescription = "View on map",
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("View Map")
                             }
                         }
 

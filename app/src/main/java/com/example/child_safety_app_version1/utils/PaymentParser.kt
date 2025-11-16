@@ -34,33 +34,60 @@ object PaymentParser {
         "upi", "vpa", "@paytm", "@okaxis", "@ybl", "@oksbi", "@okicici"
     )
 
+    // 🆕 Enhanced currency patterns
+    private val CURRENCY_PATTERNS = listOf(
+        "₹", "rs.", "rs ", "inr", "rupees", "rupee"
+    )
+
     /**
-     * Check if SMS is from a known payment source
+     * 🔧 FIXED: More flexible payment SMS detection
+     * Now accepts if ANY 2 of 3 conditions are met:
+     * 1. Known sender OR phone number
+     * 2. Payment keyword (debited/credited)
+     * 3. Currency indicator OR amount pattern
      */
     fun isPaymentSms(sender: String, message: String): Boolean {
         val normalizedSender = sender.uppercase().replace("-", "")
         val normalizedMessage = message.uppercase()
 
-        // Check if sender matches known patterns
-        val isSenderKnown = KNOWN_SENDERS.any { normalizedSender.contains(it) }
+        Log.d(TAG, "🔍 Enhanced Payment SMS Check:")
+        Log.d(TAG, "   Sender: $sender")
+        Log.d(TAG, "   Normalized Sender: $normalizedSender")
 
-        // Check if message contains payment keywords
-        val hasPaymentKeyword = (DEBIT_KEYWORDS + CREDIT_KEYWORDS + UPI_KEYWORDS)
+        // Condition 1: Known sender OR looks like phone number
+        val isSenderKnown = KNOWN_SENDERS.any { normalizedSender.contains(it) }
+        val isPhoneNumber = sender.matches(Regex("^[+]?[0-9]{10,15}$"))
+        val condition1 = isSenderKnown || isPhoneNumber
+
+        Log.d(TAG, "   ✓ Condition 1 (Sender): $condition1")
+        Log.d(TAG, "      - Known Sender: $isSenderKnown")
+        Log.d(TAG, "      - Phone Number: $isPhoneNumber")
+
+        // Condition 2: Has payment keyword
+        val condition2 = (DEBIT_KEYWORDS + CREDIT_KEYWORDS + UPI_KEYWORDS)
             .any { normalizedMessage.contains(it.uppercase()) }
 
-        // Check for rupee symbol or INR or Rs
-        val hasCurrency = normalizedMessage.contains("₹") ||
-                normalizedMessage.contains("INR") ||
-                normalizedMessage.contains("RS.") ||
-                normalizedMessage.contains("RS ")
+        Log.d(TAG, "   ✓ Condition 2 (Payment Keyword): $condition2")
 
-        Log.d(TAG, "Payment SMS Check:")
-        Log.d(TAG, "  Sender: $sender -> Normalized: $normalizedSender")
-        Log.d(TAG, "  Is Known Sender: $isSenderKnown")
-        Log.d(TAG, "  Has Payment Keyword: $hasPaymentKeyword")
-        Log.d(TAG, "  Has Currency: $hasCurrency")
+        // Condition 3: Has currency OR amount pattern
+        val hasCurrency = CURRENCY_PATTERNS.any { normalizedMessage.contains(it.uppercase()) }
+        val hasAmountPattern = normalizedMessage.contains(Regex("\\d{1,3}(,\\d{3})*(\\.\\d{2})?")) ||
+                normalizedMessage.contains(Regex("\\d+[,.]?\\d*"))
 
-        return isSenderKnown && hasPaymentKeyword && hasCurrency
+        val condition3 = hasCurrency || hasAmountPattern
+
+        Log.d(TAG, "   ✓ Condition 3 (Currency/Amount): $condition3")
+        Log.d(TAG, "      - Has Currency: $hasCurrency")
+        Log.d(TAG, "      - Has Amount Pattern: $hasAmountPattern")
+
+        // Count how many conditions are met
+        val conditionsMet = listOf(condition1, condition2, condition3).count { it }
+        val isPaymentSms = conditionsMet >= 2
+
+        Log.d(TAG, "   📊 Conditions Met: $conditionsMet/3")
+        Log.d(TAG, "   ✅ Is Payment SMS: $isPaymentSms")
+
+        return isPaymentSms
     }
 
     /**
@@ -68,9 +95,9 @@ object PaymentParser {
      */
     fun parseTransaction(sender: String, message: String, childUid: String): PaymentTransaction? {
         try {
-            Log.d(TAG, "========================================")
+            Log.d(TAG, "════════════════════════════════════════")
             Log.d(TAG, "PARSING PAYMENT SMS")
-            Log.d(TAG, "========================================")
+            Log.d(TAG, "════════════════════════════════════════")
             Log.d(TAG, "Sender: $sender")
             Log.d(TAG, "Message: $message")
             Log.d(TAG, "Child UID: ${childUid.take(10)}...")
@@ -119,7 +146,7 @@ object PaymentParser {
             )
 
             Log.d(TAG, "✅ Transaction parsed successfully")
-            Log.d(TAG, "========================================")
+            Log.d(TAG, "════════════════════════════════════════")
 
             return transaction
 
@@ -131,31 +158,61 @@ object PaymentParser {
     }
 
     /**
-     * Extract amount from SMS message
+     * 🔧 ENHANCED: Extract amount with support for "rupees" text
      */
     private fun extractAmount(message: String): Double? {
         try {
             // Pattern 1: ₹1,234.56 or Rs.1,234.56 or Rs 1234.56
-            val pattern1 = Regex("""[₹Rs.]+\s?([0-9,]+\.?[0-9]*)""")
+            val pattern1 = Regex("""[₹Rs.]+\s?([0-9,]+\.?[0-9]*)""", RegexOption.IGNORE_CASE)
             val match1 = pattern1.find(message)
             if (match1 != null) {
                 val amountStr = match1.groupValues[1].replace(",", "")
+                Log.d(TAG, "   Amount Pattern 1 matched: $amountStr")
                 return amountStr.toDoubleOrNull()
             }
 
             // Pattern 2: INR 1234.56 or INR 1,234.56
-            val pattern2 = Regex("""INR\s?([0-9,]+\.?[0-9]*)""")
+            val pattern2 = Regex("""INR\s?([0-9,]+\.?[0-9]*)""", RegexOption.IGNORE_CASE)
             val match2 = pattern2.find(message)
             if (match2 != null) {
                 val amountStr = match2.groupValues[1].replace(",", "")
+                Log.d(TAG, "   Amount Pattern 2 matched: $amountStr")
                 return amountStr.toDoubleOrNull()
             }
 
             // Pattern 3: of Rs 1234 or of Rs. 1234
-            val pattern3 = Regex("""of\s+Rs\.?\s?([0-9,]+\.?[0-9]*)""")
+            val pattern3 = Regex("""of\s+Rs\.?\s?([0-9,]+\.?[0-9]*)""", RegexOption.IGNORE_CASE)
             val match3 = pattern3.find(message)
             if (match3 != null) {
                 val amountStr = match3.groupValues[1].replace(",", "")
+                Log.d(TAG, "   Amount Pattern 3 matched: $amountStr")
+                return amountStr.toDoubleOrNull()
+            }
+
+            // 🆕 Pattern 4: "rupees 50,000" or "rupees 50000"
+            val pattern4 = Regex("""rupees?\s+([0-9,]+\.?[0-9]*)""", RegexOption.IGNORE_CASE)
+            val match4 = pattern4.find(message)
+            if (match4 != null) {
+                val amountStr = match4.groupValues[1].replace(",", "")
+                Log.d(TAG, "   Amount Pattern 4 matched (rupees): $amountStr")
+                return amountStr.toDoubleOrNull()
+            }
+
+            // 🆕 Pattern 5: "with 50,000" (fallback for simple messages)
+            val pattern5 = Regex("""with\s+([0-9,]+\.?[0-9]*)""", RegexOption.IGNORE_CASE)
+            val match5 = pattern5.find(message)
+            if (match5 != null) {
+                val amountStr = match5.groupValues[1].replace(",", "")
+                Log.d(TAG, "   Amount Pattern 5 matched (with): $amountStr")
+                return amountStr.toDoubleOrNull()
+            }
+
+            // 🆕 Pattern 6: Just find any number with comma/decimal
+            val pattern6 = Regex("""([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?)""")
+            val match6 = pattern6.find(message)
+            if (match6 != null) {
+                val amountStr = match6.groupValues[1].replace(",", "")
+                Log.d(TAG, "   Amount Pattern 6 matched (number): $amountStr")
                 return amountStr.toDoubleOrNull()
             }
 

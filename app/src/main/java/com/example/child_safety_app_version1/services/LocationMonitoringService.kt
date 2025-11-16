@@ -5,11 +5,13 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -17,6 +19,12 @@ import com.example.child_safety_app_version1.MainActivity
 import com.example.child_safety_app_version1.utils.FcmNotificationSender
 import com.example.child_safety_app_version1.utils.NotificationType
 import com.example.child_safety_app_version1.utils.SafeZoneChecker
+import com.example.child_safety_app_version1.utils.celltower.HybridLocationStrategy
+import com.example.child_safety_app_version1.utils.celltower.HybridLocationResult
+import com.example.child_safety_app_version1.utils.celltower.LocationMethod
+import com.example.child_safety_app_version1.utils.celltower.NetworkConnectivityMonitor
+import com.example.child_safety_app_version1.utils.media.SafeZoneMediaAlertService
+import com.example.child_safety_app_version1.utils.sms.SmsLocationSender
 import com.google.android.gms.location.*
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.*
@@ -29,75 +37,178 @@ class LocationMonitoringService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val LOCATION_UPDATE_INTERVAL = 30 * 1000L // 30 seconds
         private const val LOCATION_FASTEST_INTERVAL = 15 * 1000L // 15 seconds
-        private const val LOCATION_CHECK_INTERVAL = 5 * 1000L // Check every 5 seconds for location status
-        private const val ALERT_THROTTLE_INTERVAL = 60 * 1000L // Send alert every 60 seconds when outside
+        private const val LOCATION_CHECK_INTERVAL = 5 * 1000L // Check every 5 seconds
+        private const val ALERT_THROTTLE_INTERVAL = 60 * 1000L // Send alert every 60 seconds
+
+        // 🆕 Wake lock tag
+        private const val WAKE_LOCK_TAG = "ChildSafety:LocationMonitoring"
+
+        // 🆕 Restart tracking
+        private var restartCount = 0
+        private const val MAX_RESTART_ATTEMPTS = 5
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
+
+    // Hybrid location components
+    private lateinit var hybridLocationStrategy: HybridLocationStrategy
+    private lateinit var networkMonitor: NetworkConnectivityMonitor
+    private lateinit var smsLocationSender: SmsLocationSender
+
+    // 🆕 Wake lock to prevent service from sleeping
+    private var wakeLock: PowerManager.WakeLock? = null
+
     private var isMonitoring = false
-    private var wasInsideSafeZone: Boolean? = null // null means first check
-    private var lastOutsideAlertTime = 0L // For throttling outside alerts
+    private var wasInsideSafeZone: Boolean? = null
+    private var lastOutsideAlertTime = 0L
     private var lastLocationDisabledNotificationTime = 0L
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var isFirstCheck = true
-    private var wasLocationEnabled = true // Track previous location state
-    private var hasApplicableSafeZones: Boolean? = null // Track if child has any safe zones
+    private var wasLocationEnabled = true
+    private var hasApplicableSafeZones: Boolean? = null
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Service created")
+        Log.d(TAG, "════════════════════════════════════════")
+        Log.d(TAG, "🚀 SERVICE CREATED (Restart count: $restartCount)")
+        Log.d(TAG, "════════════════════════════════════════")
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        createNotificationChannel()
 
+        // Initialize hybrid location components
+        hybridLocationStrategy = HybridLocationStrategy(this)
+        networkMonitor = NetworkConnectivityMonitor(this)
+        smsLocationSender = SmsLocationSender(this)
+
+        acquireWakeLock()
+        createNotificationChannel()
         setupLocationCallback()
     }
 
+    // 🆕 Call this in onStartCommand after service starts
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "Service started")
+        Log.d(TAG, "════════════════════════════════════════")
+        Log.d(TAG, "🔄 SERVICE STARTED")
+        Log.d(TAG, "   Intent: ${intent?.action}")
+        Log.d(TAG, "   Restart count: $restartCount")
+        Log.d(TAG, "════════════════════════════════════════")
 
         val notification = createForegroundNotification("Monitoring your safety zone")
-        startForeground(NOTIFICATION_ID, notification)
 
-        // Check if child has applicable safe zones
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
         checkApplicableSafeZones()
-
-        // Get immediate location check when service starts
-        getImmediateLocation()
-
+        getImmediateLocationHybrid()
         startLocationMonitoring()
         setupLocationSettingsListener()
 
+        // 🆕 Upload any pending media from previous crashes/offline periods
+        uploadPendingMediaOnRestart()
+
+        startServiceHeartbeat()
+
         return START_STICKY
+    }
+
+    /**
+     * 🆕 Acquire partial wake lock to prevent Doze mode from killing service
+     */
+    private fun acquireWakeLock() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                WAKE_LOCK_TAG
+            ).apply {
+                acquire(10 * 60 * 60 * 1000L) // 10 hours
+            }
+            Log.d(TAG, "✅ Wake lock acquired")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to acquire wake lock", e)
+        }
+    }
+
+    /**
+     * 🆕 Release wake lock
+     */
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "✅ Wake lock released")
+                }
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error releasing wake lock", e)
+        }
+    }
+
+    /**
+     * 🆕 Heartbeat to keep service alive and detect if it's still working
+     */
+    private fun startServiceHeartbeat() {
+        serviceScope.launch {
+            var heartbeatCount = 0
+            while (isActive && isMonitoring) {
+                heartbeatCount++
+
+                if (heartbeatCount % 12 == 0) { // Every 60 seconds (12 * 5 seconds)
+                    Log.d(TAG, "💓 Service heartbeat: $heartbeatCount (${heartbeatCount * 5}s uptime)")
+
+                    // Verify location monitoring is still active
+                    if (!isMonitoring) {
+                        Log.e(TAG, "⚠️ Monitoring stopped unexpectedly - restarting...")
+                        startLocationMonitoring()
+                    }
+                }
+
+                delay(5000) // 5 seconds
+            }
+        }
     }
 
     private fun setupLocationCallback() {
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { location ->
-                    Log.d(TAG, "Location update: ${location.latitude}, ${location.longitude}")
-                    checkSafeZone(location)
+                    Log.d(TAG, "📍 GPS Location: ${location.latitude}, ${location.longitude}")
+
+                    val hybridResult = HybridLocationResult.Success(
+                        latitude = location.latitude,
+                        longitude = location.longitude,
+                        accuracy = location.accuracy,
+                        method = LocationMethod.GPS
+                    )
+
+                    checkSafeZone(hybridResult)
                 }
             }
 
             override fun onLocationAvailability(availability: LocationAvailability) {
                 super.onLocationAvailability(availability)
                 if (!availability.isLocationAvailable) {
-                    Log.w(TAG, "Location not available - services may be disabled")
+                    Log.w(TAG, "⚠️ GPS not available - using cell tower fallback")
                     checkLocationSettings()
                 }
             }
         }
     }
 
-    /**
-     * Check if the current child has any applicable safe zones defined
-     */
     private fun checkApplicableSafeZones() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid
         if (uid == null) {
-            Log.e(TAG, "No user logged in")
+            Log.e(TAG, "❌ No user logged in")
             return
         }
 
@@ -107,41 +218,36 @@ class LocationMonitoringService : Service() {
                 hasApplicableSafeZones = hasSafeZones
 
                 if (!hasSafeZones) {
-                    Log.w(TAG, "⚠️ Child has no applicable safe zones defined")
-                    updateForegroundNotification("No safe zones defined for you")
+                    Log.w(TAG, "⚠️ No applicable safe zones defined")
+                    updateForegroundNotification("No safe zones defined")
                 } else {
-                    Log.d(TAG, "✓ Child has applicable safe zones")
+                    Log.d(TAG, "✅ Safe zones found")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error checking applicable safe zones", e)
+                Log.e(TAG, "❌ Error checking safe zones", e)
             }
         }
     }
 
-    /**
-     * Gets immediate location when service starts (don't wait for first interval)
-     */
-    private fun getImmediateLocation() {
-        if (ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.e(TAG, "Location permission not granted")
-            return
-        }
+    private fun getImmediateLocationHybrid() {
+        serviceScope.launch {
+            try {
+                Log.d(TAG, "🔍 Getting immediate location...")
 
-        Log.d(TAG, "Requesting immediate location...")
+                val result = hybridLocationStrategy.getCurrentLocation()
 
-        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-            if (location != null) {
-                Log.d(TAG, "Got immediate location: ${location.latitude}, ${location.longitude}")
-                checkSafeZone(location)
-            } else {
-                Log.w(TAG, "Last location is null, waiting for first update...")
+                when (result) {
+                    is HybridLocationResult.Success -> {
+                        Log.d(TAG, "✅ Got location via ${result.method}")
+                        checkSafeZone(result)
+                    }
+                    is HybridLocationResult.Error -> {
+                        Log.e(TAG, "❌ Failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Exception", e)
             }
-        }.addOnFailureListener { e ->
-            Log.e(TAG, "Failed to get immediate location", e)
         }
     }
 
@@ -151,7 +257,7 @@ class LocationMonitoringService : Service() {
                 Manifest.permission.ACCESS_FINE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            Log.e(TAG, "Location permission not granted")
+            Log.e(TAG, "❌ Location permission not granted")
             stopSelf()
             return
         }
@@ -171,13 +277,13 @@ class LocationMonitoringService : Service() {
         )
 
         isMonitoring = true
-        Log.d(TAG, "Location monitoring started (updates every 30 seconds)")
+        Log.d(TAG, "✅ Location monitoring started (GPS + Cell Tower + SMS)")
     }
 
     private fun setupLocationSettingsListener() {
         serviceScope.launch {
             while (isActive && isMonitoring) {
-                delay(LOCATION_CHECK_INTERVAL) // Check every 5 seconds
+                delay(LOCATION_CHECK_INTERVAL)
                 checkLocationSettings()
             }
         }
@@ -189,132 +295,228 @@ class LocationMonitoringService : Service() {
         val isNetworkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         val isLocationEnabled = isGpsEnabled || isNetworkEnabled
 
-        Log.d(TAG, "Location status check - GPS: $isGpsEnabled, Network: $isNetworkEnabled")
+        networkMonitor.logNetworkChange()
 
-        // Detect location being turned OFF (state change)
         if (wasLocationEnabled && !isLocationEnabled) {
-            Log.w(TAG, "⚠️ LOCATION TURNED OFF - Sending immediate notification!")
-            updateForegroundNotification("⚠️ Location services disabled")
+            Log.w(TAG, "⚠️ LOCATION DISABLED - Using cell tower + SMS")
+            updateForegroundNotification("⚠️ Cell tower mode")
             sendLocationDisabledNotification(immediate = true)
             wasLocationEnabled = false
         }
-        // Detect location being turned back ON
         else if (!wasLocationEnabled && isLocationEnabled) {
-            Log.d(TAG, "✓ Location turned back on")
-            updateForegroundNotification("Monitoring your safety zone")
+            Log.d(TAG, "✅ Location re-enabled")
+            updateForegroundNotification("Monitoring safety zone")
             wasLocationEnabled = true
-            // Reset notification timer when location is re-enabled
             lastLocationDisabledNotificationTime = 0L
+            hybridLocationStrategy.resetGpsFailureCounter()
         }
-        // Location is still OFF - send periodic reminders
         else if (!isLocationEnabled) {
-            Log.w(TAG, "Location still disabled")
             sendLocationDisabledNotification(immediate = false)
+            tryGetCellTowerLocation()
         }
     }
 
-    private fun checkSafeZone(location: Location) {
+    private fun tryGetCellTowerLocation() {
+        serviceScope.launch {
+            try {
+                val result = hybridLocationStrategy.forceCellTowerMode()
+
+                when (result) {
+                    is HybridLocationResult.Success -> {
+                        Log.d(TAG, "✅ Cell tower location obtained")
+                        checkSafeZone(result)
+                    }
+                    is HybridLocationResult.Error -> {
+                        Log.w(TAG, "⚠️ Cell tower failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Exception", e)
+            }
+        }
+    }
+
+    private fun checkSafeZone(locationResult: HybridLocationResult.Success) {
         val uid = FirebaseAuth.getInstance().currentUser?.uid
         if (uid == null) {
-            Log.e(TAG, "No user logged in")
+            Log.e(TAG, "❌ No user logged in")
             return
         }
 
         serviceScope.launch {
             try {
-                // Check if child has any safe zones assigned
-                val hasSafeZones = hasApplicableSafeZones ?: SafeZoneChecker.hasApplicableSafeZones(childUid = uid)
+                val hasSafeZones = hasApplicableSafeZones
+                    ?: SafeZoneChecker.hasApplicableSafeZones(childUid = uid)
 
                 if (!hasSafeZones) {
-                    Log.d(TAG, "Child has no applicable safe zones - skipping check")
-                    updateForegroundNotification("No safe zones defined for you")
-                    wasInsideSafeZone = null // Reset state
+                    Log.d(TAG, "ℹ️ No safe zones - skipping check")
+                    updateForegroundNotification("No safe zones defined")
+                    wasInsideSafeZone = null
                     return@launch
                 }
 
                 val isInSafeZone = SafeZoneChecker.isLocationInAnySafeZone(
                     childUid = uid,
-                    latitude = location.latitude,
-                    longitude = location.longitude
+                    latitude = locationResult.latitude,
+                    longitude = locationResult.longitude
                 )
 
-                Log.d(TAG, "Location check: isInSafeZone = $isInSafeZone, wasInside = $wasInsideSafeZone")
+                Log.d(TAG, "Safe zone check: $isInSafeZone (via ${locationResult.method})")
 
-                // Handle based on current status
                 when {
                     isInSafeZone -> {
-                        // Child is INSIDE a safe zone
-                        Log.d(TAG, "✓ Child is inside safe zone")
-                        updateForegroundNotification("✓ Inside safe zone")
+                        val methodIcon = when (locationResult.method) {
+                            LocationMethod.GPS -> "🛰️"
+                            LocationMethod.CELL_TOWER -> "📡"
+                            LocationMethod.CACHED_GPS -> "📦"
+                            else -> ""
+                        }
+                        updateForegroundNotification("✅ Inside safe zone $methodIcon")
 
-                        // If transitioning from outside to inside, log it
                         if (wasInsideSafeZone == false) {
-                            Log.d(TAG, "Child entered safe zone from outside")
+                            Log.d(TAG, "🏠 Entered safe zone")
                         }
 
                         wasInsideSafeZone = true
                         isFirstCheck = false
-                        // Reset alert throttle when entering safe zone
                         lastOutsideAlertTime = 0L
                     }
 
                     !isInSafeZone -> {
-                        // Child is OUTSIDE all safe zones
-                        Log.w(TAG, "⚠️ Child is outside safe zone")
+                        Log.w(TAG, "⚠️ Outside safe zone")
                         updateForegroundNotification("⚠️ Outside safe zone")
-
-                        // Send alert to parents
-                        sendOutsideAlertIfNeeded(location)
-
+                        sendOutsideAlertWithMethod(locationResult)
                         wasInsideSafeZone = false
                         isFirstCheck = false
                     }
                 }
 
             } catch (e: Exception) {
-                Log.e(TAG, "Error checking safe zone", e)
+                Log.e(TAG, "❌ Error checking safe zone", e)
             }
         }
     }
 
-    /**
-     * Send alert to parents when child is outside safe zone
-     * Throttled to avoid spam - sends immediately on first detection,
-     * then every 60 seconds while child remains outside
-     */
-    private fun sendOutsideAlertIfNeeded(location: Location) {
+    // 🆕 REPLACE the sendOutsideAlertWithMethod function with this version:
+    // 🆕 REPLACE the sendOutsideAlertWithMethod function with this version:
+    private fun sendOutsideAlertWithMethod(result: HybridLocationResult.Success) {
         val currentTime = System.currentTimeMillis()
         val timeSinceLastAlert = currentTime - lastOutsideAlertTime
 
-        // Send immediately if first alert, otherwise throttle to 60 seconds
         if (lastOutsideAlertTime == 0L || timeSinceLastAlert >= ALERT_THROTTLE_INTERVAL) {
-            Log.d(TAG, "Sending outside safe zone alert (time since last: ${timeSinceLastAlert}ms)")
-            sendOutsideSafeZoneNotification(
-                latitude = location.latitude,
-                longitude = location.longitude
-            )
+            Log.d(TAG, "🚨 Sending alert (${result.method}, ${timeSinceLastAlert}ms ago)")
+
+            val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+
+            serviceScope.launch {
+                val hasInternet = networkMonitor.isInternetAvailable()
+                val goodForApi = networkMonitor.isGoodEnoughForApiCalls()
+
+                Log.d(TAG, "Network: internet=$hasInternet, goodForApi=$goodForApi")
+
+                // 🆕 NEW: Capture and upload media (video + audio) when outside safe zone
+                try {
+                    val mediaSuccess = SafeZoneMediaAlertService.handleOutsideSafeZoneWithMedia(
+                        context = this@LocationMonitoringService,
+                        childUid = uid,
+                        latitude = result.latitude,
+                        longitude = result.longitude,
+                        locationMethod = result.method.name,
+                        accuracy = result.accuracy
+                    )
+
+                    if (mediaSuccess) {
+                        Log.d(TAG, "✅ Media capture & upload succeeded")
+                    } else {
+                        Log.w(TAG, "⚠️ Media capture/upload failed - falling back to FCM/SMS")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Exception in media capture", e)
+                    e.printStackTrace()
+                }
+
+                // 🆕 FALLBACK: Send location alert via FCM/SMS (original behavior)
+                if (hasInternet && goodForApi) {
+                    sendViaFcm(uid, result)
+                } else {
+                    sendViaSms(uid, result)
+                }
+            }
+
             lastOutsideAlertTime = currentTime
         } else {
             val timeUntilNext = (ALERT_THROTTLE_INTERVAL - timeSinceLastAlert) / 1000
-            Log.d(TAG, "Alert throttled - next alert in ${timeUntilNext}s")
+            Log.d(TAG, "⏱️ Alert throttled - next in ${timeUntilNext}s")
+        }
+    }
+
+    // 🆕 Add this function to upload pending media when service restarts
+    private fun uploadPendingMediaOnRestart() {
+        serviceScope.launch {
+            try {
+                Log.d(TAG, "🔄 Checking for pending media files on service restart...")
+                SafeZoneMediaAlertService.uploadPendingMediaFiles(
+                    context = this@LocationMonitoringService
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error uploading pending media", e)
+            }
+        }
+    }
+
+    private suspend fun sendViaFcm(childUid: String, result: HybridLocationResult.Success) {
+        try {
+            val success = FcmNotificationSender.sendNotificationToParents(
+                context = this@LocationMonitoringService,
+                childUid = childUid,
+                notificationType = NotificationType.OUTSIDE_SAFE_ZONE,
+                latitude = result.latitude,
+                longitude = result.longitude,
+                locationMethod = result.method.name,
+                accuracy = result.accuracy
+            )
+
+            if (success) {
+                Log.d(TAG, "✅ FCM sent")
+            } else {
+                Log.e(TAG, "❌ FCM failed - trying SMS...")
+                sendViaSms(childUid, result)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ FCM exception", e)
+            sendViaSms(childUid, result)
+        }
+    }
+
+    private suspend fun sendViaSms(childUid: String, result: HybridLocationResult.Success) {
+        try {
+            val success = smsLocationSender.sendLocationViaSms(
+                latitude = result.latitude,
+                longitude = result.longitude,
+                childUid = childUid,
+                locationMethod = result.method.name,
+                accuracy = result.accuracy
+            )
+
+            if (success) {
+                Log.d(TAG, "✅ SMS sent")
+            } else {
+                Log.e(TAG, "❌ SMS failed")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ SMS exception", e)
         }
     }
 
     private fun sendLocationDisabledNotification(immediate: Boolean = false) {
         val currentTime = System.currentTimeMillis()
 
-        // For immediate notifications (just turned off), send right away
-        // For periodic reminders, throttle to once every 2 minutes
         if (!immediate && currentTime - lastLocationDisabledNotificationTime < 2 * 60 * 1000) {
-            Log.d(TAG, "Location disabled notification throttled")
             return
         }
 
         lastLocationDisabledNotificationTime = currentTime
-
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-
-        Log.d(TAG, "Sending location disabled notification (immediate: $immediate)")
 
         serviceScope.launch {
             try {
@@ -325,49 +527,12 @@ class LocationMonitoringService : Service() {
                 )
 
                 if (success) {
-                    Log.d(TAG, "✓ Location disabled notification sent")
+                    Log.d(TAG, "✅ Location disabled notification sent")
                 } else {
-                    Log.e(TAG, "✗ Failed to send location disabled notification")
+                    Log.e(TAG, "❌ Failed")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending location disabled notification", e)
-                e.printStackTrace()
-            }
-        }
-    }
-
-    private fun sendOutsideSafeZoneNotification(
-        latitude: Double,
-        longitude: Double
-    ) {
-        val uid = FirebaseAuth.getInstance().currentUser?.uid
-        if (uid == null) {
-            Log.e(TAG, "Cannot send notification - no user UID")
-            return
-        }
-
-        Log.d(TAG, "Sending outside safe zone notification")
-        Log.d(TAG, "Child UID: ${uid.take(10)}...")
-        Log.d(TAG, "Location: $latitude, $longitude")
-
-        serviceScope.launch {
-            try {
-                val success = FcmNotificationSender.sendNotificationToParents(
-                    context = this@LocationMonitoringService,
-                    childUid = uid,
-                    notificationType = NotificationType.OUTSIDE_SAFE_ZONE,
-                    latitude = latitude,
-                    longitude = longitude
-                )
-
-                if (success) {
-                    Log.d(TAG, "✓ Outside safe zone notification sent with location")
-                } else {
-                    Log.e(TAG, "✗ Failed to send outside safe zone notification")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception while sending safe zone notification", e)
-                e.printStackTrace()
+                Log.e(TAG, "❌ Error", e)
             }
         }
     }
@@ -404,6 +569,8 @@ class LocationMonitoringService : Service() {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            // 🆕 Add foreground service behavior for Android 12+
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 
@@ -413,13 +580,53 @@ class LocationMonitoringService : Service() {
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
+    /**
+     * 🆕 Enhanced onDestroy with restart attempt
+     */
     override fun onDestroy() {
-        super.onDestroy()
-        Log.d(TAG, "Service destroyed")
+        Log.d(TAG, "════════════════════════════════════════")
+        Log.d(TAG, "⚠️ SERVICE DESTROYED")
+        Log.d(TAG, "   Restart count: $restartCount")
+        Log.d(TAG, "════════════════════════════════════════")
 
         isMonitoring = false
         fusedLocationClient.removeLocationUpdates(locationCallback)
         serviceScope.cancel()
+        releaseWakeLock()
+
+        // 🆕 Try to restart service if not intentionally stopped
+        if (restartCount < MAX_RESTART_ATTEMPTS) {
+            restartCount++
+            Log.d(TAG, "🔄 Attempting restart ($restartCount/$MAX_RESTART_ATTEMPTS)")
+
+            val restartIntent = Intent(applicationContext, LocationMonitoringService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(restartIntent)
+            } else {
+                applicationContext.startService(restartIntent)
+            }
+        } else {
+            Log.e(TAG, "❌ Max restart attempts reached - service will not restart")
+            restartCount = 0
+        }
+
+        super.onDestroy()
+    }
+
+    /**
+     * 🆕 Handle task removal (when user swipes app away)
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.d(TAG, "⚠️ TASK REMOVED - App swiped away")
+        super.onTaskRemoved(rootIntent)
+
+        // Restart service when task is removed
+        val restartIntent = Intent(applicationContext, LocationMonitoringService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            applicationContext.startForegroundService(restartIntent)
+        } else {
+            applicationContext.startService(restartIntent)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
