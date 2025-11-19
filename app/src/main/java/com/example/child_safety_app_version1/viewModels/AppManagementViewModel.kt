@@ -524,6 +524,15 @@ class AppManagementViewModel(
     fun resetToIdle() {
         _state.value = AppManagementState.Idle
     }
+
+    /**
+     * Refresh blocked apps list from Firestore
+     * Called when apps are unblocked from the Blocked Apps section
+     */
+    fun refreshBlockedApps() {
+        Log.d(TAG, "🔄 Refreshing blocked apps list...")
+        loadBlockedApps()
+    }
 }
 
 /**

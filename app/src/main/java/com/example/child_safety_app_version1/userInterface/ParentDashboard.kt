@@ -21,6 +21,8 @@ import androidx.navigation.NavController
 import com.example.child_safety_app_version1.utils.FcmTokenManager
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,6 +31,7 @@ fun ParentDashboard(navController: NavController) {
     val auth = FirebaseAuth.getInstance()
     val currentUser = auth.currentUser
     val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
     var isLoggingOut by remember { mutableStateOf(false) }
 
     // 🆕 SMS permission launcher (for receiving location SMS from child)
@@ -136,6 +139,7 @@ fun ParentDashboard(navController: NavController) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(scrollState)  // ← ADD THIS
                 .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -216,9 +220,8 @@ fun ParentDashboard(navController: NavController) {
                 onClick = { navController.navigate("emergency_contacts") }
             )
 
-            Spacer(modifier = Modifier.weight(1f))
-
             // Logout Button
+
             OutlinedButton(
                 onClick = { handleLogout() },
                 modifier = Modifier.fillMaxWidth(),

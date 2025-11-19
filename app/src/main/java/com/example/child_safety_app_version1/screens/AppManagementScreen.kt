@@ -451,6 +451,83 @@ private fun SelectedChildContent(
 
     // Existing LaunchedEffect calls for blocked apps, all apps, etc.
     // ... (keep all your existing code) ...
+    // ✅ FIXED CODE
+    LaunchedEffect(childUid) {
+        isLoadingBlockedApps.value = true  // Set loading ONCE at start
+
+        val db = FirebaseFirestore.getInstance()
+        val listener = db.collection("users")
+            .document(childUid)
+            .collection("blockedApps")
+            .addSnapshotListener { snapshot, error ->
+                // ✅ Remove loading state from inside listener
+                if (error != null) {
+                    Log.e(TAG, "Error listening to blocked apps", error)
+                    isLoadingBlockedApps.value = false
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    val blocked = snapshot.documents.mapNotNull { doc ->
+                        BlockedAppInfo(
+                            appName = doc.getString("appName") ?: "",
+                            packageName = doc.id,
+                            blockedAt = doc.getLong("blockedAt") ?: 0L,
+                            blockedBy = doc.getString("blockedBy") ?: ""
+                        )
+                    }
+                    blockedAppsList.value = blocked
+                    isLoadingBlockedApps.value = false  // ✅ Set false only on first load
+                }
+            }
+    }
+
+    // Add this listener for all apps data
+    LaunchedEffect(childUid) {
+        val db = FirebaseFirestore.getInstance()
+
+        allAppsRequestListener.value = db.collection("users")
+            .document(childUid)
+            .collection("allApps")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e(TAG, "Error listening to allApps", error)
+                    isLoadingAllApps.value = false
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null && !snapshot.isEmpty) {
+                    val apps = snapshot.documents.mapNotNull { doc ->
+                        try {
+                            AppUsageInfo(
+                                packageName = doc.getString("packageName") ?: return@mapNotNull null,
+                                appName = doc.getString("appName") ?: "Unknown",
+                                totalTimeMs = doc.getLong("totalTimeMs") ?: 0L,
+                                lastUsed = doc.getLong("lastUsed") ?: 0L,
+                                icon = null
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing app: ${e.message}")
+                            null
+                        }
+                    }
+
+                    allInstalledApps.value = apps
+                    hasLoadedAllApps.value = true
+                    isLoadingAllApps.value = false
+
+                    Log.d(TAG, "✅ Loaded ${apps.size} apps from allApps collection")
+                }
+            }
+    }
+
+// Don't forget to clean up the listener
+    DisposableEffect(childUid) {
+        onDispose {
+            allAppsRequestListener.value?.remove()
+            allAppsRequestListener.value = null
+        }
+    }
 
     // Function to trigger fetch from child device
     fun triggerFetchFromChildDevice() {
@@ -565,13 +642,50 @@ private fun SelectedChildContent(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Card 2: Blocked Apps
                 BlockedAppsSection(
                     blockedApps = blockedAppsList.value,
                     isLoading = isLoadingBlockedApps.value,
                     childUid = childUid,
                     onUnblock = { packageName ->
-                        // ... existing unblock code ...
+                        // Unblock the app by deleting from Firestore
+                        coroutineScope.launch {
+                            try {
+                                Log.d(TAG, "🔓 Unblocking app: $packageName")
+
+                                val db = FirebaseFirestore.getInstance()
+                                db.collection("users")
+                                    .document(childUid)
+                                    .collection("blockedApps")
+                                    .document(packageName)
+                                    .delete()
+                                    .await()
+
+                                Log.d(TAG, "✅ Successfully unblocked: $packageName")
+
+                                // Update local blocked apps list
+                                blockedAppsList.value = blockedAppsList.value.filter {
+                                    it.packageName != packageName
+                                }
+
+                                // ⭐ NEW: Tell the ViewModel to reload blocked apps
+                                // This will update the blockedApps state that AllAppsCard uses
+                                viewModel.refreshBlockedApps()
+
+                                Toast.makeText(
+                                    context,
+                                    "App unblocked successfully",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+
+                            } catch (e: Exception) {
+                                Log.e(TAG, "❌ Error unblocking app", e)
+                                Toast.makeText(
+                                    context,
+                                    "Failed to unblock app: ${e.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                     }
                 )
 
