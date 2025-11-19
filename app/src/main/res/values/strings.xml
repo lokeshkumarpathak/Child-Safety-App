@@ -3,5 +3,6 @@
     <!-- Add this inside <resources> tag in res/values/strings.xml -->
 
     <string name="accessibility_service_description">This service monitors app usage to enforce parental controls. It blocks apps based on Study Mode, Bedtime Mode, or parent restrictions.</string>
-</resources>
+    <string name="gemini_api_key">AIzaSyD2MXM-tDqNYz7m8tYFbKwFRIqxm-4FmOo</string>
 
+</resources>

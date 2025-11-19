@@ -1,6 +1,7 @@
 package com.example.child_safety_app_version1.screens
 
 import android.util.Log
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,6 +32,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.child_safety_app_version1.data.AppUsageInfo
 import com.example.child_safety_app_version1.components.AppListItem
+import com.example.child_safety_app_version1.components.TopAppsInsightsCard
+import com.example.child_safety_app_version1.components.WeeklyInsightsCard
+import com.example.child_safety_app_version1.data.WeeklyInsights
+import com.example.child_safety_app_version1.managers.WeeklyInsightsCollector
+import com.example.child_safety_app_version1.utils.AIInsightsGenerator
 import com.example.child_safety_app_version1.utils.UsageStatsHelper
 import com.example.child_safety_app_version1.viewModels.AppManagementState
 import com.example.child_safety_app_version1.viewModels.AppManagementViewModel
@@ -297,9 +303,10 @@ fun AppManagementScreen() {
 
 // Replace the SelectedChildContent composable with this updated version:
 
-@Composable
-// Replace the SelectedChildContent composable with this updated version:
+// Add this to your AppManagementScreen.kt SelectedChildContent composable
+// Replace the existing SelectedChildContent function with this enhanced version
 
+@Composable
 private fun SelectedChildContent(
     childUid: String,
     childName: String
@@ -307,7 +314,7 @@ private fun SelectedChildContent(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    // ⭐ Create ViewModel with context for selected child
+    // Existing ViewModel
     val viewModel = remember(childUid) {
         AppManagementViewModel(
             childUid = childUid,
@@ -318,154 +325,132 @@ private fun SelectedChildContent(
     val state by viewModel.state.collectAsState()
     val blockedApps by viewModel.blockedApps.collectAsState()
 
-    // State for blocked apps list
+    // Existing state variables
     val blockedAppsList = remember { mutableStateOf<List<BlockedAppInfo>>(emptyList()) }
     val isLoadingBlockedApps = remember { mutableStateOf(true) }
-
-    // State for all installed apps
     val allInstalledApps = remember { mutableStateOf<List<AppUsageInfo>>(emptyList()) }
     val isLoadingAllApps = remember { mutableStateOf(false) }
     val hasLoadedAllApps = remember { mutableStateOf(false) }
     val allAppsRequestListener = remember { mutableStateOf<com.google.firebase.firestore.ListenerRegistration?>(null) }
 
-    // Fetch blocked apps when child is selected
+    // 🆕 NEW: Weekly Insights State
+    var weeklyInsights by remember { mutableStateOf<WeeklyInsights?>(null) }
+    var isLoadingInsights by remember { mutableStateOf(false) }
+    var hasInsights by remember { mutableStateOf(false) }
+    var insightsError by remember { mutableStateOf<String?>(null) }
+
+    // 🆕 NEW: Load existing insights on launch
     LaunchedEffect(childUid) {
-        isLoadingBlockedApps.value = true
+        Log.d(TAG, "🔍 Checking for existing insights for child: $childUid")
+        isLoadingInsights = true
         try {
-            Log.d(TAG, "Fetching blocked apps for child: $childUid")
-            val db = FirebaseFirestore.getInstance()
-            val blockedAppsRef = db.collection("users")
-                .document(childUid)
-                .collection("blockedApps")
+            val (weekId, startDate, endDate) = WeeklyInsightsCollector.getLastWeekDateRange()
+            Log.d(TAG, "   Week ID: $weekId ($startDate to $endDate)")
 
-            val snapshot = blockedAppsRef
-                .whereEqualTo("blocked", true)
-                .get()
-                .await()
+            val existingInsights = AIInsightsGenerator.loadInsightsFromFirestore(childUid, weekId)
 
-            val apps = snapshot.documents.mapNotNull { doc ->
-                try {
-                    val appName = doc.getString("appName")
-                    val packageName = doc.getString("packageName")
-                    val blockedAt = doc.getLong("blockedAt")
-                    val blockedBy = doc.getString("blockedBy")
-
-                    if (appName != null && packageName != null && blockedAt != null && blockedBy != null) {
-                        BlockedAppInfo(appName, packageName, blockedAt, blockedBy)
-                    } else {
-                        null
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error parsing blocked app document", e)
-                    null
-                }
-            }
-
-            blockedAppsList.value = apps.sortedByDescending { it.blockedAt }
-            Log.d(TAG, "Found ${apps.size} blocked apps")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching blocked apps", e)
-        } finally {
-            isLoadingBlockedApps.value = false
-        }
-    }
-
-    // Load apps from Firestore on initial load
-    LaunchedEffect(childUid) {
-        try {
-            Log.d(TAG, "📱 Loading initial apps from Firestore")
-            val db = FirebaseFirestore.getInstance()
-
-            val allAppsRef = db.collection("users")
-                .document(childUid)
-                .collection("allApps")
-
-            val snapshot = allAppsRef.get().await()
-
-            if (!snapshot.isEmpty) {
-                Log.d(TAG, "📥 Loaded apps from Firestore")
-
-                val apps = snapshot.documents.mapNotNull { doc ->
-                    try {
-                        AppUsageInfo(
-                            packageName = doc.getString("packageName") ?: return@mapNotNull null,
-                            appName = doc.getString("appName") ?: "Unknown",
-                            totalTimeMs = doc.getLong("totalTimeMs") ?: 0L,
-                            lastUsed = doc.getLong("lastUsed") ?: 0L,
-                            icon = null
-                        )
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error parsing app", e)
-                        null
-                    }
-                }
-
-                allInstalledApps.value = apps.sortedBy { it.appName }
-                hasLoadedAllApps.value = true
-                Log.d(TAG, "✅ Loaded ${apps.size} apps from Firestore")
+            if (existingInsights != null) {
+                Log.d(TAG, "   ✅ Found existing insights with ${existingInsights.insights.size} items")
+                weeklyInsights = existingInsights
+                hasInsights = true
+                insightsError = null
             } else {
-                Log.d(TAG, "No apps in Firestore yet")
-                hasLoadedAllApps.value = false
+                Log.d(TAG, "   ℹ️ No existing insights found")
+                hasInsights = false
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error loading initial apps", e)
-            hasLoadedAllApps.value = false
+            Log.e(TAG, "   ❌ Error loading insights", e)
+            insightsError = "Failed to load insights: ${e.message}"
+        } finally {
+            isLoadingInsights = false
         }
     }
 
-    // Set up real-time listener for allApps collection
-    LaunchedEffect(childUid) {
-        try {
-            Log.d(TAG, "🎧 Setting up real-time listener for allApps")
-            val db = FirebaseFirestore.getInstance()
+    // 🆕 NEW: Function to generate insights
+    fun generateInsights() {
+        Log.d(TAG, "════════════════════════════════════════")
+        Log.d(TAG, "🤖 GENERATING WEEKLY INSIGHTS")
+        Log.d(TAG, "════════════════════════════════════════")
 
-            val listener = db.collection("users")
-                .document(childUid)
-                .collection("allApps")
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.e(TAG, "❌ Error listening to allApps", error)
-                        return@addSnapshotListener
-                    }
+        coroutineScope.launch {
+            isLoadingInsights = true
+            insightsError = null
 
-                    if (snapshot != null && !snapshot.isEmpty) {
-                        Log.d(TAG, "📥 Real-time update: Received ${snapshot.documents.size} apps")
+            try {
+                // Step 1: Collect weekly data
+                Log.d(TAG, "STEP 1: Collecting weekly data...")
+                val weeklyData = WeeklyInsightsCollector.collectLastWeekData(
+                    context = context,
+                    childUid = childUid
+                )
 
-                        val apps = snapshot.documents.mapNotNull { doc ->
-                            try {
-                                AppUsageInfo(
-                                    packageName = doc.getString("packageName") ?: return@mapNotNull null,
-                                    appName = doc.getString("appName") ?: "Unknown",
-                                    totalTimeMs = doc.getLong("totalTimeMs") ?: 0L,
-                                    lastUsed = doc.getLong("lastUsed") ?: 0L,
-                                    icon = null
-                                )
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error parsing app", e)
-                                null
-                            }
-                        }
-
-                        allInstalledApps.value = apps.sortedBy { it.appName }
-                        hasLoadedAllApps.value = true
-                        isLoadingAllApps.value = false
-                        Log.d(TAG, "✅ Updated UI with ${apps.size} apps")
-                    }
+                if (weeklyData == null) {
+                    Log.w(TAG, "⚠️ No weekly data available")
+                    insightsError = "Not enough data for last week. Please try again later."
+                    Toast.makeText(
+                        context,
+                        "Insufficient data for last week. Need at least 1 day of usage data.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    isLoadingInsights = false
+                    return@launch
                 }
 
-            allAppsRequestListener.value = listener
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error setting up listener", e)
+                Log.d(TAG, "✅ Weekly data collected:")
+                Log.d(TAG, "   Days with data: ${weeklyData.dataAvailableDays}/7")
+                Log.d(TAG, "   Total apps: ${weeklyData.aggregatedApps.size}")
+                Log.d(TAG, "   Total screen time: ${UsageStatsHelper.formatDuration(weeklyData.totalScreenTimeMs)}")
+
+                // Step 2: Generate insights using AI
+                Log.d(TAG, "")
+                Log.d(TAG, "STEP 2: Generating AI insights...")
+                val insights = AIInsightsGenerator.generateInsights(
+                    context = context,
+                    childUid = childUid,
+                    childName = childName,
+                    weeklyData = weeklyData
+                )
+
+                if (insights != null) {
+                    Log.d(TAG, "✅ Insights generated successfully!")
+                    Log.d(TAG, "   Insights count: ${insights.insights.size}")
+                    weeklyInsights = insights
+                    hasInsights = true
+                    insightsError = null
+
+                    Toast.makeText(
+                        context,
+                        "✨ Insights generated successfully!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Log.e(TAG, "❌ Failed to generate insights")
+                    insightsError = "Failed to generate insights. Please try again."
+                    Toast.makeText(
+                        context,
+                        "Failed to generate insights. Check your connection and try again.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ CRITICAL ERROR generating insights", e)
+                e.printStackTrace()
+                insightsError = "Error: ${e.message}"
+                Toast.makeText(
+                    context,
+                    "Error: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isLoadingInsights = false
+                Log.d(TAG, "════════════════════════════════════════")
+            }
         }
     }
 
-    // Cleanup listener
-    DisposableEffect(childUid) {
-        onDispose {
-            allAppsRequestListener.value?.remove()
-            Log.d(TAG, "🛑 Removed allApps listener")
-        }
-    }
+    // Existing LaunchedEffect calls for blocked apps, all apps, etc.
+    // ... (keep all your existing code) ...
 
     // Function to trigger fetch from child device
     fun triggerFetchFromChildDevice() {
@@ -474,7 +459,6 @@ private fun SelectedChildContent(
         viewModel.fetchAllInstalledApps()
     }
 
-    // Check if we're in "Fetch Usage Data" mode (showing usage stats)
     val isShowingUsageData = state is AppManagementState.Success
 
     Column(
@@ -482,9 +466,8 @@ private fun SelectedChildContent(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        // Show Usage Data results if available, otherwise show the cards
         if (isShowingUsageData) {
-            // Show only the fetched usage data
+            // Show usage data results (existing code)
             when (state) {
                 is AppManagementState.Success -> {
                     UsageDataResultsCard(
@@ -512,6 +495,56 @@ private fun SelectedChildContent(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
             ) {
+                // 🆕 NEW: Weekly Insights Card (added at the top)
+                WeeklyInsightsCard(
+                    childName = childName,
+                    isLoadingInsights = isLoadingInsights,
+                    hasInsights = hasInsights,
+                    insights = weeklyInsights,
+                    onGetInsights = { generateInsights() },
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                // 🆕 NEW: Show error if any
+                if (insightsError != null) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Error,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = insightsError!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+
+                // 🆕 NEW: Top Apps Card (if insights available)
+                if (hasInsights && weeklyInsights != null && weeklyInsights!!.topApps.isNotEmpty()) {
+                    TopAppsInsightsCard(
+                        topApps = weeklyInsights!!.topApps,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                }
+
+                // Existing Cards (keep all your existing code)
                 // Card 1: All Apps
                 AllAppsCard(
                     apps = allInstalledApps.value,
@@ -519,10 +552,7 @@ private fun SelectedChildContent(
                     hasLoadedAllApps = hasLoadedAllApps.value,
                     blockedApps = blockedApps,
                     childUid = childUid,
-                    onRefresh = {
-                        // ⭐ Trigger fetch from child device via ViewModel
-                        triggerFetchFromChildDevice()
-                    },
+                    onRefresh = { triggerFetchFromChildDevice() },
                     onToggleBlocked = { packageName, appName ->
                         viewModel.toggleAppBlocked(packageName, appName)
                     },
@@ -541,27 +571,13 @@ private fun SelectedChildContent(
                     isLoading = isLoadingBlockedApps.value,
                     childUid = childUid,
                     onUnblock = { packageName ->
-                        val db = FirebaseFirestore.getInstance()
-                        db.collection("users")
-                            .document(childUid)
-                            .collection("blockedApps")
-                            .document(packageName)
-                            .delete()
-                            .addOnSuccessListener {
-                                Log.d(TAG, "Successfully deleted blocked app: $packageName")
-                                blockedAppsList.value = blockedAppsList.value.filter {
-                                    it.packageName != packageName
-                                }
-                            }
-                            .addOnFailureListener { e ->
-                                Log.e(TAG, "Error deleting blocked app", e)
-                            }
+                        // ... existing unblock code ...
                     }
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Button for Fetch Usage Data only
+                // Button for Fetch Usage Data
                 Button(
                     onClick = { viewModel.fetchUsageData() },
                     enabled = state !is AppManagementState.Loading,
@@ -1016,174 +1032,6 @@ private fun UsageDataResultsCard(
         }
     }
 }
-
-// All Apps Card - kept as before
-//@Composable
-//
-//private fun AllAppsCard(
-//    apps: List<AppUsageInfo>,
-//    isLoading: Boolean,
-//    hasLoadedAllApps: Boolean,
-//    blockedApps: Set<String>,
-//    childUid: String,
-//    onRefresh: () -> Unit,
-//    onToggleBlocked: (String, String) -> Unit,
-//    onAppUnblocked: (String) -> Unit
-//) {
-//    var isExpanded by remember { mutableStateOf(false) }
-//
-//    Card(
-//        modifier = Modifier
-//            .fillMaxWidth()
-//            .clickable { isExpanded = !isExpanded },
-//        colors = CardDefaults.cardColors(containerColor = Color.White),
-//        shape = RoundedCornerShape(12.dp),
-//        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-//    ) {
-//        Column(
-//            modifier = Modifier
-//                .fillMaxWidth()
-//                .padding(16.dp)
-//        ) {
-//            Row(
-//                modifier = Modifier.fillMaxWidth(),
-//                verticalAlignment = Alignment.CenterVertically,
-//                horizontalArrangement = Arrangement.SpaceBetween
-//            ) {
-//                Row(verticalAlignment = Alignment.CenterVertically) {
-//                    Icon(
-//                        imageVector = Icons.Default.Apps,
-//                        contentDescription = null,
-//                        tint = Color(0xFF1976D2),
-//                        modifier = Modifier.size(24.dp)
-//                    )
-//                    Spacer(modifier = Modifier.width(12.dp))
-//                    Column {
-//                        Text(
-//                            text = "All Apps",
-//                            style = MaterialTheme.typography.titleMedium,
-//                            color = Color(0xFF212121)
-//                        )
-//                        Text(
-//                            text = if (!hasLoadedAllApps) "Click to load apps" else if (apps.isEmpty()) "No apps loaded" else "${apps.size} apps",
-//                            style = MaterialTheme.typography.bodySmall,
-//                            color = Color(0xFF757575)
-//                        )
-//                    }
-//                }
-//
-//                Icon(
-//                    imageVector = if (isExpanded) Icons.Default.Close else Icons.Default.Search,
-//                    contentDescription = if (isExpanded) "Collapse" else "Expand",
-//                    tint = Color(0xFF757575)
-//                )
-//            }
-//
-//            if (isExpanded) {
-//                Spacer(modifier = Modifier.height(16.dp))
-//                HorizontalDivider(color = Color(0xFFE0E0E0))
-//                Spacer(modifier = Modifier.height(16.dp))
-//
-//                // Refresh Button
-//                Button(
-//                    onClick = onRefresh,
-//                    enabled = !isLoading,
-//                    modifier = Modifier
-//                        .fillMaxWidth()
-//                        .height(44.dp),
-//                    shape = RoundedCornerShape(8.dp),
-//                    colors = ButtonDefaults.buttonColors(
-//                        containerColor = Color(0xFF4CAF50)
-//                    )
-//                ) {
-//                    Icon(
-//                        imageVector = Icons.Default.Refresh,
-//                        contentDescription = null,
-//                        modifier = Modifier.size(18.dp)
-//                    )
-//                    Spacer(modifier = Modifier.width(8.dp))
-//                    Text("Refresh All Apps", style = MaterialTheme.typography.labelMedium)
-//                }
-//
-//                Spacer(modifier = Modifier.height(16.dp))
-//
-//                if (isLoading) {
-//                    Box(
-//                        modifier = Modifier
-//                            .fillMaxWidth()
-//                            .height(100.dp),
-//                        contentAlignment = Alignment.Center
-//                    ) {
-//                        Column(
-//                            horizontalAlignment = Alignment.CenterHorizontally
-//                        ) {
-//                            CircularProgressIndicator(modifier = Modifier.size(32.dp))
-//                            Spacer(modifier = Modifier.height(12.dp))
-//                            Text(
-//                                text = "Loading apps...",
-//                                style = MaterialTheme.typography.bodySmall,
-//                                color = Color(0xFF757575)
-//                            )
-//                        }
-//                    }
-//                } else if (!hasLoadedAllApps) {
-//                    Text(
-//                        text = "Click 'Refresh All Apps' button to load apps from Firestore.",
-//                        style = MaterialTheme.typography.bodyMedium,
-//                        color = Color(0xFF9E9E9E),
-//                        textAlign = TextAlign.Center,
-//                        modifier = Modifier
-//                            .fillMaxWidth()
-//                            .padding(vertical = 16.dp)
-//                    )
-//                } else if (apps.isEmpty()) {
-//                    Text(
-//                        text = "No apps available in Firestore.",
-//                        style = MaterialTheme.typography.bodyMedium,
-//                        color = Color(0xFF9E9E9E),
-//                        textAlign = TextAlign.Center,
-//                        modifier = Modifier
-//                            .fillMaxWidth()
-//                            .padding(vertical = 16.dp)
-//                    )
-//                } else {
-//                    Column {
-//                        apps.forEach { app ->
-//                            AppListItem(
-//                                app = app,
-//                                isBlocked = blockedApps.contains(app.packageName),
-//                                onToggleBlocked = {
-//                                    if (!blockedApps.contains(app.packageName)) {
-//                                        onToggleBlocked(app.packageName, app.appName)
-//                                    } else {
-//                                        val db = FirebaseFirestore.getInstance()
-//                                        db.collection("users")
-//                                            .document(childUid)
-//                                            .collection("blockedApps")
-//                                            .document(app.packageName)
-//                                            .delete()
-//                                            .addOnSuccessListener {
-//                                                Log.d(TAG, "Successfully deleted blocked app: ${app.packageName}")
-//                                                onAppUnblocked(app.packageName)
-//                                                onToggleBlocked(app.packageName, app.appName)
-//                                            }
-//                                            .addOnFailureListener { e ->
-//                                                Log.e(TAG, "Error deleting blocked app", e)
-//                                            }
-//                                    }
-//                                }
-//                            )
-//
-//                            if (app != apps.last()) {
-//                                Spacer(modifier = Modifier.height(8.dp))
-//                            }
-//                        }
-//                    }
-//                }
-//            }
-//        }
-//    }
-//}
 
 @Composable
 private fun BlockedAppsSection(

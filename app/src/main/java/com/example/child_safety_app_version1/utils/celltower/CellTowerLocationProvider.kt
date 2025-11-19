@@ -32,7 +32,7 @@ class CellTowerLocationProvider(private val context: Context) {
         private const val TAG = "CellLocationProvider"
 
         // OpenCelliD API Configuration
-        private const val OPENCELLID_API_KEY = "YOUR_API_KEY_HERE" // TODO: Replace with actual key
+        private const val OPENCELLID_API_KEY = "pk.ff38226425bd439d4fc2277f6c5677e8" // TODO: Replace with actual key
         private const val OPENCELLID_BASE_URL = "https://opencellid.org/cell/get"
 
         // Unwired Labs (Alternative API)

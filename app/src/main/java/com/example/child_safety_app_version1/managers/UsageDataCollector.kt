@@ -325,39 +325,63 @@ object UsageDataCollector {
 
             Log.d(TAG, "   Starting batch upload...")
 
-            // Clear existing data first
+            // 🔧 FIX: Clear existing data first using BATCH operations (much faster)
             Log.d(TAG, "   🗑️ Clearing old allApps data...")
             val allAppsRef = db.collection("users")
                 .document(childUid)
                 .collection("allApps")
 
             val existingDocs = allAppsRef.get().await()
-            existingDocs.documents.forEach { it.reference.delete().await() }
-            Log.d(TAG, "   ✅ Cleared ${existingDocs.size()} old documents")
+            Log.d(TAG, "   Found ${existingDocs.size()} existing documents to delete")
+
+            if (existingDocs.documents.isNotEmpty()) {
+                // Use batch operations for efficient deletion (max 500 per batch)
+                val deleteBatches = existingDocs.documents.chunked(500)
+
+                for ((batchIndex, batchDocs) in deleteBatches.withIndex()) {
+                    Log.d(TAG, "   Deleting batch ${batchIndex + 1}/${deleteBatches.size} (${batchDocs.size} docs)...")
+                    val writeBatch = db.batch()
+
+                    batchDocs.forEach { doc ->
+                        writeBatch.delete(doc.reference)
+                    }
+
+                    writeBatch.commit().await()
+                    Log.d(TAG, "   ✅ Batch ${batchIndex + 1} deleted")
+                }
+
+                Log.d(TAG, "   ✅ All ${existingDocs.size()} old documents deleted")
+            } else {
+                Log.d(TAG, "   No existing documents to delete")
+            }
+
+            // 🔧 OPTIMIZED: Upload in batches for better performance
+            Log.d(TAG, "   📤 Uploading ${allApps.size} apps in batches...")
 
             var successCount = 0
             var failureCount = 0
 
-            for (app in allApps) {
+            // Split apps into batches of 500 (Firestore batch limit)
+            val uploadBatches = allApps.chunked(500)
+
+            for ((batchIndex, batchApps) in uploadBatches.withIndex()) {
                 try {
-                    val uploadData = app.toFirestoreMap()
+                    Log.d(TAG, "   Uploading batch ${batchIndex + 1}/${uploadBatches.size} (${batchApps.size} apps)...")
+                    val writeBatch = db.batch()
 
-                    Log.d(TAG, "      ↳ Uploading: ${app.appName}")
+                    batchApps.forEach { app ->
+                        val uploadData = app.toFirestoreMap()
+                        val docRef = allAppsRef.document(app.packageName)
+                        writeBatch.set(docRef, uploadData)
+                    }
 
-                    // Use package name as document ID
-                    db.collection("users")
-                        .document(childUid)
-                        .collection("allApps")
-                        .document(app.packageName)
-                        .set(uploadData)
-                        .await()
-
-                    successCount++
-                    Log.d(TAG, "         ✅ Success")
+                    writeBatch.commit().await()
+                    successCount += batchApps.size
+                    Log.d(TAG, "   ✅ Batch ${batchIndex + 1} uploaded successfully")
 
                 } catch (e: Exception) {
-                    failureCount++
-                    Log.e(TAG, "         ❌ Failed: ${e.message}")
+                    failureCount += batchApps.size
+                    Log.e(TAG, "   ❌ Batch ${batchIndex + 1} failed: ${e.message}")
                 }
             }
 

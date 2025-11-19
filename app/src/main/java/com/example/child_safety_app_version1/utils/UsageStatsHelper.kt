@@ -227,22 +227,122 @@ object UsageStatsHelper {
                         false
                     }
 
-                    // List of system package prefixes to exclude
+                    // 🔧 STRICTER: Comprehensive list of critical system packages to ALWAYS exclude
+                    val criticalSystemPackages = setOf(
+                        // Core Android System
+                        "android",
+                        "com.android.systemui",
+                        "com.android.settings",
+                        "com.android.launcher",
+                        "com.android.launcher3",
+                        "com.android.phone",
+                        "com.android.dialer",
+                        "com.android.contacts",
+                        "com.android.providers.contacts",
+                        "com.android.providers.telephony",
+                        "com.android.mms",
+                        "com.android.messaging",
+                        "com.android.server.telecom",
+                        "com.android.incallui",
+                        "com.android.stk",
+
+                        // System Navigation & UI
+                        "com.android.inputmethod.latin",
+                        "com.android.inputmethod.keyboard",
+                        "com.google.android.inputmethod.latin",
+                        "com.samsung.android.honeyboard",
+                        "com.android.nfc",
+                        "com.android.bluetooth",
+
+                        // Critical Services
+                        "com.android.vending", // Google Play Store (system)
+                        "com.google.android.gms",
+                        "com.google.android.gsf",
+                        "com.google.android.packageinstaller",
+                        "com.android.packageinstaller",
+                        "com.android.permissioncontroller",
+                        "com.google.android.permissioncontroller",
+
+                        // Device Admin & Security
+                        "com.android.deviceadmin",
+                        "com.google.android.apps.work.oobconfig",
+                        "com.android.managedprovisioning",
+                        "com.android.certinstaller",
+
+                        // Shell & Development
+                        "com.android.shell",
+                        "com.android.sharedstoragebackup",
+                        "com.android.defcontainer",
+                        "com.android.development",
+
+                        // Your app package (self-exclusion)
+                        context.packageName
+                    )
+
+                    // System package prefixes to exclude
                     val systemPrefixes = listOf(
                         "android.",
                         "com.android.internal",
                         "com.google.android.gsf",
-                        "com.google.android.gms.persistent"
+                        "com.google.android.gms.persistent",
+                        "com.sec.android.app.launcher", // Samsung launcher
+                        "com.miui.", // Xiaomi system
+                        "com.huawei.", // Huawei system
+                        "com.oppo.", // Oppo system
+                        "com.oneplus.", // OnePlus system
+                        "com.coloros.", // ColorOS system
+                        "com.bbk." // Vivo/Oppo parent company
                     )
 
                     val isSystemPrefix = systemPrefixes.any { packageName.startsWith(it) }
+                    val isCriticalPackage = criticalSystemPackages.contains(packageName)
 
-                    // Only filter if it's a pure system app with no launcher and system prefix
-                    val shouldFilter = isSystemApp && !isUpdatedSystemApp && !hasLauncherIntent && isSystemPrefix
+                    // 🔧 STRICTER FILTERING:
+                    // Exclude if ANY of these conditions are true:
+                    // 1. It's in the critical system packages list (ALWAYS exclude)
+                    // 2. It's a system app with system prefix and no launcher
+                    // 3. It's a pure system app (not updated) with no launcher
+                    val shouldFilter = isCriticalPackage ||
+                            (isSystemApp && isSystemPrefix && !hasLauncherIntent) ||
+                            (isSystemApp && !isUpdatedSystemApp && !hasLauncherIntent)
 
                     if (shouldFilter) {
                         excludedCount++
-                        excludedApps.add(packageName)
+                        val reason = when {
+                            isCriticalPackage -> "(critical system)"
+                            isSystemPrefix -> "(system prefix)"
+                            else -> "(system no launcher)"
+                        }
+                        excludedApps.add("$packageName $reason")
+                        continue
+                    }
+
+                    // 🔧 ADDITIONAL SAFETY: Check for essential app categories
+                    val essentialCategories = listOf(
+                        "launcher",
+                        "phone",
+                        "dialer",
+                        "contacts",
+                        "messaging",
+                        "settings",
+                        "keyboard",
+                        "systemui"
+                    )
+
+                    val appNameLower = try {
+                        packageManager.getApplicationLabel(packageInfo).toString().lowercase()
+                    } catch (e: Exception) {
+                        packageName.lowercase()
+                    }
+
+                    // Skip if app name or package contains essential keywords
+                    val isEssential = essentialCategories.any {
+                        appNameLower.contains(it) || packageName.lowercase().contains(it)
+                    }
+
+                    if (isEssential && isSystemApp) {
+                        excludedCount++
+                        excludedApps.add("$packageName (essential: $appNameLower)")
                         continue
                     }
 
@@ -284,17 +384,29 @@ object UsageStatsHelper {
             }
 
             Log.d(TAG, "═══════════════════════════════════════")
-            Log.d(TAG, "App Collection Summary:")
+            Log.d(TAG, "🔒 STRICT App Collection Summary:")
             Log.d(TAG, "  Total packages scanned: ${packages.size}")
-            Log.d(TAG, "  ✅ Apps included: $includedCount")
-            Log.d(TAG, "  ⏭️ Apps excluded: $excludedCount")
+            Log.d(TAG, "  ✅ Apps included (safe to block): $includedCount")
+            Log.d(TAG, "  ⏭️ Apps excluded (protected): $excludedCount")
             Log.d(TAG, "═══════════════════════════════════════")
 
-            // Log first 20 excluded apps for debugging
+            // Log excluded apps by category for debugging
             if (excludedApps.isNotEmpty() && Log.isLoggable(TAG, Log.DEBUG)) {
-                Log.d(TAG, "Sample excluded apps (first 20):")
-                excludedApps.take(20).forEach {
-                    Log.d(TAG, "  - $it")
+                val criticalExcluded = excludedApps.filter { it.contains("(critical system)") }
+                val essentialExcluded = excludedApps.filter { it.contains("(essential:") }
+                val otherExcluded = excludedApps.filterNot {
+                    it.contains("(critical system)") || it.contains("(essential:")
+                }
+
+                Log.d(TAG, "📋 Excluded Apps Breakdown:")
+                Log.d(TAG, "  Critical system apps: ${criticalExcluded.size}")
+                Log.d(TAG, "  Essential apps (phone/contacts): ${essentialExcluded.size}")
+                Log.d(TAG, "  Other system apps: ${otherExcluded.size}")
+
+                Log.d(TAG, "")
+                Log.d(TAG, "Sample Critical/Essential Excluded (first 30):")
+                (criticalExcluded + essentialExcluded).take(30).forEach {
+                    Log.d(TAG, "  🔒 $it")
                 }
             }
 
