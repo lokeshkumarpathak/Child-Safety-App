@@ -220,6 +220,13 @@ fun ParentDashboard(navController: NavController) {
                 onClick = { navController.navigate("emergency_contacts") }
             )
 
+            DashboardButton(
+                icon = Icons.Default.Delete,
+                title = "Uninstall Permissions",
+                description = "Review child's uninstall requests",
+                onClick = { navController.navigate("uninstall_requests") }
+            )
+
             // Logout Button
 
             OutlinedButton(

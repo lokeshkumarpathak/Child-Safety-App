@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat.getSystemService
 import com.example.child_safety_app_version1.MainActivity
 import com.example.child_safety_app_version1.managers.UsageDataCollector
 import com.google.firebase.auth.FirebaseAuth
@@ -81,6 +82,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         Log.d(TAG, "  - Request ID: $requestId")
 
         // Handle different message types
+        // Handle different message types
         when (notificationType) {
             "USAGE_DATA_REQUEST" -> {
                 Log.d(TAG, "========================================")
@@ -88,6 +90,7 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 Log.d(TAG, "========================================")
                 handleUsageDataRequest(childUid, requestId, parentUid)
             }
+
             "ALL_APPS_REQUEST" -> {
                 Log.d(TAG, "========================================")
                 Log.d(TAG, "📱 ALL APPS REQUEST RECEIVED")
@@ -137,6 +140,77 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 )
             }
 
+            "UNINSTALL_REQUEST" -> {
+                Log.d(TAG, "🗑️ UNINSTALL REQUEST RECEIVED")
+
+                // Ensure parentUid is not null
+                val targetParentUid = parentUid ?: FirebaseAuth.getInstance().currentUser?.uid
+
+                if (targetParentUid == null) {
+                    Log.e(TAG, "❌ CRITICAL: No parent UID available for uninstall request")
+                    return
+                }
+
+                Log.d(TAG, "Target parent UID: ${targetParentUid.take(10)}...")
+
+                // Save notification to Firestore
+                saveNotificationToFirestore(
+                    parentUid = targetParentUid,
+                    childUid = childUid,
+                    childName = childName,
+                    title = title,
+                    body = body,
+                    notificationType = notificationType,
+                    latitude = null,
+                    longitude = null
+                )
+
+                // Show system notification
+                showNotification(
+                    title,
+                    body,
+                    childName,
+                    notificationType,
+                    null,
+                    null,
+                    System.currentTimeMillis().toInt()
+                )
+            }
+
+            "UNINSTALL_APPROVED" -> {
+                // Child receives full approval -> disable device admin so uninstall can proceed
+                Log.d(TAG, "UNINSTALL_APPROVED received - removing device admin to allow uninstall")
+                // Save notification (optional)
+                saveNotificationToFirestore(
+                    parentUid = FirebaseAuth.getInstance().currentUser?.uid ?: "",
+                    childUid = childUid,
+                    childName = childName,
+                    title = title,
+                    body = body,
+                    notificationType = notificationType,
+                    latitude = null, longitude = null
+                )
+                showNotification(title, body, childName, notificationType, null, null, System.currentTimeMillis().toInt())
+
+                // Programmatically remove device admin to allow uninstall
+                try {
+                    val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+                    val comp = android.content.ComponentName(this, com.example.child_safety_app_version1.receivers.MyDeviceAdminReceiver::class.java)
+                    dpm.removeActiveAdmin(comp)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to remove device admin: ${e.message}")
+                }
+            }
+
+            "UNINSTALL_PARTIAL_RESPONSE" -> {
+                // Child receives notice that one parent approved but others pending
+                showNotification(title, body, "", notificationType, null, null, System.currentTimeMillis().toInt())
+            }
+
+            "UNINSTALL_REJECTED" -> {
+                // Child receives rejection
+                showNotification(title, body, "", notificationType, null, null, System.currentTimeMillis().toInt())
+            }
 
             else -> {
                 // Handle other notification types as before
@@ -164,8 +238,15 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
                 // Show system notification
                 when (notificationType) {
                     "OUTSIDE_SAFE_ZONE" -> {
-                        showOrUpdateOutsideSafeZoneNotification(title, body, childName, latitude, longitude)
+                        showOrUpdateOutsideSafeZoneNotification(
+                            title,
+                            body,
+                            childName,
+                            latitude,
+                            longitude
+                        )
                     }
+
                     else -> {
                         showNotification(
                             title, body, childName, notificationType,

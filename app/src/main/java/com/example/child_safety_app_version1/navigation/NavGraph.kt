@@ -19,6 +19,8 @@ import com.example.child_safety_app_version1.utils.getSavedRole
 import com.example.child_safety_app_version1.screens.AppManagementScreen
 import com.example.child_safety_app_version1.screens.ModeControlScreen
 import com.example.child_safety_app_version1.userInterface.PaymentMonitoringScreen
+import com.example.child_safety_app_version1.userInterface.UninstallRequestsScreen
+//import com.example.child_safety_app_version1.userInterface.UninstallPermissionsScreen
 import com.example.child_safety_app_version1.viewModels.ModeControlViewModel
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -109,6 +111,11 @@ fun NavGraph(shouldOpenNotifications: Boolean = false) {
         composable("payment_monitoring") {
             PaymentMonitoringScreen(navController = navController)
         }
+
+        composable("uninstall_requests") {
+            UninstallRequestsScreen()
+        }
+
     }
 
     // Debug log to verify correct navigation start

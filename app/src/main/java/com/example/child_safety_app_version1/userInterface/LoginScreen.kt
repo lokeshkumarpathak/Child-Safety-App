@@ -83,6 +83,26 @@ object InputValidator {
     }
 }
 
+// Re-auth helper to reuse in UninstallRequestsScreen if desired
+fun reauthenticateCurrentUser(password: String, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
+    val auth = FirebaseAuth.getInstance()
+    val user = auth.currentUser
+    if (user == null) {
+        onFailure("No user logged in")
+        return
+    }
+    val email = user.email
+    if (email.isNullOrBlank()) {
+        onFailure("User has no email")
+        return
+    }
+    val credential = EmailAuthProvider.getCredential(email, password)
+    user.reauthenticate(credential).addOnCompleteListener { task ->
+        if (task.isSuccessful) onSuccess() else onFailure(task.exception?.message ?: "Auth failed")
+    }
+}
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(navController: NavController) {

@@ -13,6 +13,8 @@ import android.widget.Toast
 import android.os.PowerManager
 import android.net.Uri
 import android.util.Log
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -169,6 +171,8 @@ fun ChildDashboard(navController: NavController) {
                 missingPermissions = missing
             }
         }
+
+
 
         lifecycleOwner.lifecycle.addObserver(observer)
 
@@ -753,6 +757,23 @@ fun ChildDashboard(navController: NavController) {
             currentMode = currentMode,
             isCollectingData = isCollectingUsageData
         )
+
+//        Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+//            Column(modifier = Modifier.padding(12.dp)) {
+//                Text("Device Admin", fontWeight = FontWeight.Bold)
+//                Spacer(Modifier.height(6.dp))
+//                Text("This app requires Device Admin to manage uninstall requests.")
+//                Spacer(Modifier.height(8.dp))
+//                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+//                    Button(onClick = {
+//                        requestDeviceAdminEnable(context)
+//                    }) {
+//                        Text("Enable Device Admin")
+//                    }
+//                }
+//            }
+//        }
+
 
         // After ModeIndicatorCard
         BackgroundSurvivalCard(
@@ -1495,4 +1516,20 @@ private fun StatusCheckItem(
             )
         }
     }
+}
+
+// Check if Device Admin is active
+fun isDeviceAdminActive(context: Context): Boolean {
+    val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    val comp = ComponentName(context, com.example.child_safety_app_version1.receivers.MyDeviceAdminReceiver::class.java)
+    return dpm.isAdminActive(comp)
+}
+
+// Launch intent to request Device Admin activation
+fun requestDeviceAdminEnable(context: Context) {
+    val comp = ComponentName(context, com.example.child_safety_app_version1.receivers.MyDeviceAdminReceiver::class.java)
+    val intent = Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+    intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, comp)
+    intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Device admin is required to prevent unauthorized uninstall.")
+    context.startActivity(intent)
 }

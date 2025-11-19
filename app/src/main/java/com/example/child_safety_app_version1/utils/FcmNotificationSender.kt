@@ -1121,6 +1121,90 @@ object FcmNotificationSender {
             connection?.disconnect()
         }
     }
+
+    /**
+     * Send uninstall response notification to child
+     */
+    suspend fun sendUninstallResponseToChild(
+        context: Context,
+        childUid: String,
+        parentUid: String,
+        requestId: String,
+        notificationType: NotificationType,
+        approvedCount: Int,
+        totalParents: Int
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "════════════════════════════════════════")
+            Log.d(TAG, "📤 SENDING UNINSTALL RESPONSE TO CHILD")
+            Log.d(TAG, "════════════════════════════════════════")
+
+            val accessToken = OAuth2TokenManager.getAccessToken(context) ?: return@withContext false
+            val childFcmToken = getChildFcmToken(childUid) ?: return@withContext false
+
+            val success = sendFcmMessageToChild(
+                accessToken = accessToken,
+                fcmToken = childFcmToken,
+                childUid = childUid,
+                parentUid = parentUid,
+                requestId = requestId,
+                notificationType = notificationType,
+                modeInfo = "Approved: $approvedCount/$totalParents"
+            )
+
+            Log.d(TAG, if (success) "✅ Response sent" else "❌ Failed to send response")
+            return@withContext success
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error sending uninstall response", e)
+            return@withContext false
+        }
+
+    }
+    suspend fun sendUninstallResponseToChild(
+        context: Context,
+        childUid: String,
+        requestId: String,
+        parentUid: String,
+        responseType: NotificationType // use enum
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val accessToken = OAuth2TokenManager.getAccessToken(context) ?: return@withContext false
+            val childFcmToken = getChildFcmToken(childUid) ?: return@withContext false
+
+            val title = when (responseType) {
+                NotificationType.UNINSTALL_APPROVED -> "Uninstall Approved"
+                NotificationType.UNINSTALL_REJECTED -> "Uninstall Rejected"
+                NotificationType.UNINSTALL_PARTIAL_RESPONSE -> "Partial Uninstall Approval"
+                else -> "Uninstall Update"
+            }
+
+            val body = when (responseType) {
+                NotificationType.UNINSTALL_APPROVED -> "All parents approved. You may uninstall the app."
+                NotificationType.UNINSTALL_REJECTED -> "Uninstall request rejected by a parent."
+                NotificationType.UNINSTALL_PARTIAL_RESPONSE -> "A parent approved. Still waiting for other parent(s)."
+                else -> ""
+            }
+
+            return@withContext sendFcmMessage(
+                accessToken = accessToken,
+                fcmToken = childFcmToken,
+                parentUid = parentUid,
+                childUid = childUid,
+                childName = "", // not needed
+                title = title,
+                body = body,
+                latitude = null,
+                longitude = null,
+                notificationType = responseType.name,
+                requestId = requestId
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "sendUninstallResponseToChild failed: ${e.message}", e)
+            return@withContext false
+        }
+    }
+
 }
 
 /**
@@ -1164,8 +1248,23 @@ enum class NotificationType {
     PAYMENT_TRANSACTION {
         override fun getTitle(childName: String) = "💰 $childName - Payment Made"
         override fun getBody(childName: String) = "$childName made a payment transaction"
+    },
+    UNINSTALL_REQUEST {
+        override fun getTitle(childName: String) = "🗑️ Uninstall Request"
+        override fun getBody(childName: String) = "$childName wants to uninstall the Child Safety App"
+    },
+    UNINSTALL_APPROVED {
+        override fun getTitle(childName: String) = "✅ Uninstall Approved"
+        override fun getBody(childName: String) = "All parents have approved your uninstall request"
+    },
+    UNINSTALL_REJECTED {
+        override fun getTitle(childName: String) = "❌ Uninstall Rejected"
+        override fun getBody(childName: String) = "One or more parents rejected your uninstall request"
+    },
+    UNINSTALL_PARTIAL_RESPONSE {
+        override fun getTitle(childName: String) = "⏳ Partial Response"
+        override fun getBody(childName: String) = "Waiting for approval from other parent(s)"
     };
-
     abstract fun getTitle(childName: String): String
     abstract fun getBody(childName: String): String
 }

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -27,7 +27,6 @@ import androidx.navigation.NavController
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.tasks.await
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -282,6 +281,7 @@ fun NotificationsScreen(navController: NavController) {
                 isLoading -> LoadingState()
                 errorMessage != null -> ErrorState(errorMessage!!)
                 notifications.isEmpty() -> EmptyState()
+
                 else -> NotificationsList(
                     notifications = notifications,
                     onViewLocation = { notification ->
@@ -298,6 +298,14 @@ fun NotificationsScreen(navController: NavController) {
                     },
                     onDismiss = { notification ->
                         dismissNotification(notification.id)
+                    },
+                    onNotificationClick = { notification ->
+                        if (notification.type == "UNINSTALL_REQUEST") {
+                            navController.navigate("uninstall_requests") {
+                                launchSingleTop = true
+                            }
+                            markNotificationAsRead(notification.id)
+                        }
                     }
                 )
             }
@@ -403,7 +411,8 @@ fun NotificationsList(
     notifications: List<SafetyNotification>,
     onViewLocation: (SafetyNotification) -> Unit,
     onViewMedia: (SafetyNotification) -> Unit,
-    onDismiss: (SafetyNotification) -> Unit
+    onDismiss: (SafetyNotification) -> Unit,
+    onNotificationClick: (SafetyNotification) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -418,7 +427,8 @@ fun NotificationsList(
                 notification = notification,
                 onViewLocation = { onViewLocation(notification) },
                 onViewMedia = { onViewMedia(notification) },
-                onDismiss = { onDismiss(notification) }
+                onDismiss = { onDismiss(notification) },
+                onNotificationClick = { onNotificationClick(notification) }
             )
         }
     }
@@ -430,7 +440,8 @@ fun AnimatedNotificationCard(
     notification: SafetyNotification,
     onViewLocation: () -> Unit,
     onViewMedia: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onNotificationClick: (SafetyNotification) -> Unit
 ) {
     // Pulsing animation for unread notifications
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -459,7 +470,9 @@ fun AnimatedNotificationCard(
     }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onNotificationClick(notification) },
         colors = CardDefaults.cardColors(
             containerColor = if (notification.read) {
                 containerColor.copy(alpha = 0.5f)
